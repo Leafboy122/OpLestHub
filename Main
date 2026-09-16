@@ -1,0 +1,439 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local StarterGui = game:GetService("StarterGui")
+local StarterPack = game:GetService("StarterPack")
+local StarterPlayer = game:GetService("StarterPlayer")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local interactables = workspace.GameAssets.Interactables
+local Event = ReplicatedStorage.Remotes.ToolAction
+
+--// ScreenGui
+local gui = Instance.new("ScreenGui")
+gui.Name = "InteractablesMixUI"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+--// Main UI
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 240, 0, 300)
+main.Position = UDim2.new(0.5, -120, 0.5, -150)
+main.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+main.BorderSizePixel = 0
+main.Parent = gui
+
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 9)
+
+--// Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 35)
+titleBar.BackgroundTransparency = 1
+titleBar.Parent = main
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -70, 1, 0)
+title.Position = UDim2.new(0, 10, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "lest Hub poke"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 16
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
+
+--// Global Search button
+local gear = Instance.new("TextButton")
+gear.Size = UDim2.new(0, 30, 0, 30)
+gear.Position = UDim2.new(1, -66, 0, 2)
+gear.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+gear.Text = "⚙"
+gear.TextColor3 = Color3.new(1, 1, 1)
+gear.TextSize = 18
+gear.Parent = titleBar
+
+Instance.new("UICorner", gear).CornerRadius = UDim.new(0, 7)
+
+--// Minimize
+local minimize = Instance.new("TextButton")
+minimize.Size = UDim2.new(0, 30, 0, 30)
+minimize.Position = UDim2.new(1, -33, 0, 2)
+minimize.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+minimize.Text = "-"
+minimize.TextColor3 = Color3.new(1, 1, 1)
+minimize.TextSize = 18
+minimize.Font = Enum.Font.GothamBold
+minimize.Parent = titleBar
+
+Instance.new("UICorner", minimize).CornerRadius = UDim.new(0, 7)
+
+--// Main content
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 1, -35)
+content.Position = UDim2.new(0, 0, 0, 35)
+content.BackgroundTransparency = 1
+content.Parent = main
+
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -80, 0, 32)
+searchBox.Position = UDim2.new(0, 8, 0, 5)
+searchBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+searchBox.PlaceholderText = "Search..."
+searchBox.Text = ""
+searchBox.TextColor3 = Color3.new(1, 1, 1)
+searchBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+searchBox.TextSize = 13
+searchBox.Font = Enum.Font.Gotham
+searchBox.Parent = content
+
+Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+
+local searchButton = Instance.new("TextButton")
+searchButton.Size = UDim2.new(0, 65, 0, 32)
+searchButton.Position = UDim2.new(1, -72, 0, 5)
+searchButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+searchButton.Text = "Search"
+searchButton.TextColor3 = Color3.new(1, 1, 1)
+searchButton.TextSize = 12
+searchButton.Font = Enum.Font.GothamBold
+searchButton.Parent = content
+
+Instance.new("UICorner", searchButton).CornerRadius = UDim.new(0, 6)
+
+local list = Instance.new("ScrollingFrame")
+list.Size = UDim2.new(1, -16, 1, -47)
+list.Position = UDim2.new(0, 8, 0, 43)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 3
+list.Parent = content
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 4)
+layout.Parent = list
+
+--// Selected global Instances
+local globalInstances = {}
+
+--// Global search window
+local globalFrame = Instance.new("Frame")
+globalFrame.Size = UDim2.new(0, 300, 0, 360)
+globalFrame.Position = UDim2.new(0.5, -150, 0.5, -180)
+globalFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+globalFrame.BorderSizePixel = 0
+globalFrame.Visible = false
+globalFrame.ZIndex = 20
+globalFrame.Parent = gui
+
+Instance.new("UICorner", globalFrame).CornerRadius = UDim.new(0, 9)
+
+local globalTitle = Instance.new("TextLabel")
+globalTitle.Size = UDim2.new(1, -45, 0, 35)
+globalTitle.Position = UDim2.new(0, 10, 0, 0)
+globalTitle.BackgroundTransparency = 1
+globalTitle.Text = "Global Instance Search"
+globalTitle.TextColor3 = Color3.new(1, 1, 1)
+globalTitle.TextSize = 15
+globalTitle.Font = Enum.Font.GothamBold
+globalTitle.TextXAlignment = Enum.TextXAlignment.Left
+globalTitle.ZIndex = 21
+globalTitle.Parent = globalFrame
+
+local closeGlobal = Instance.new("TextButton")
+closeGlobal.Size = UDim2.new(0, 28, 0, 28)
+closeGlobal.Position = UDim2.new(1, -33, 0, 3)
+closeGlobal.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+closeGlobal.Text = "X"
+closeGlobal.TextColor3 = Color3.new(1, 1, 1)
+closeGlobal.TextSize = 13
+closeGlobal.Font = Enum.Font.GothamBold
+closeGlobal.ZIndex = 21
+closeGlobal.Parent = globalFrame
+
+Instance.new("UICorner", closeGlobal).CornerRadius = UDim.new(0, 6)
+
+local globalSearch = Instance.new("TextBox")
+globalSearch.Size = UDim2.new(1, -85, 0, 32)
+globalSearch.Position = UDim2.new(0, 8, 0, 42)
+globalSearch.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+globalSearch.PlaceholderText = "Search anywhere..."
+globalSearch.Text = ""
+globalSearch.TextColor3 = Color3.new(1, 1, 1)
+globalSearch.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+globalSearch.TextSize = 13
+globalSearch.Font = Enum.Font.Gotham
+globalSearch.ZIndex = 21
+globalSearch.Parent = globalFrame
+
+Instance.new("UICorner", globalSearch).CornerRadius = UDim.new(0, 6)
+
+local globalSearchButton = Instance.new("TextButton")
+globalSearchButton.Size = UDim2.new(0, 70, 0, 32)
+globalSearchButton.Position = UDim2.new(1, -78, 0, 42)
+globalSearchButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+globalSearchButton.Text = "Search"
+globalSearchButton.TextColor3 = Color3.new(1, 1, 1)
+globalSearchButton.TextSize = 12
+globalSearchButton.Font = Enum.Font.GothamBold
+globalSearchButton.ZIndex = 21
+globalSearchButton.Parent = globalFrame
+
+Instance.new("UICorner", globalSearchButton).CornerRadius = UDim.new(0, 6)
+
+local globalList = Instance.new("ScrollingFrame")
+globalList.Size = UDim2.new(1, -16, 1, -85)
+globalList.Position = UDim2.new(0, 8, 0, 80)
+globalList.BackgroundTransparency = 1
+globalList.BorderSizePixel = 0
+globalList.ScrollBarThickness = 3
+globalList.ZIndex = 21
+globalList.Parent = globalFrame
+
+local globalLayout = Instance.new("UIListLayout")
+globalLayout.Padding = UDim.new(0, 4)
+globalLayout.Parent = globalList
+
+--// Containers visible to the client
+local containers = {
+	workspace,
+	ReplicatedStorage,
+	ReplicatedFirst,
+	StarterGui,
+	StarterPack,
+	StarterPlayer,
+}
+
+--// Clear global results
+local function clearGlobalResults()
+	for _, child in ipairs(globalList:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+end
+
+--// Global search
+local function globalSearchRefresh()
+	clearGlobalResults()
+
+	local query = globalSearch.Text:lower()
+
+	if query == "" then
+		return
+	end
+
+	local results = {}
+	local seen = {}
+
+	for _, container in ipairs(containers) do
+		local descendants = container:GetDescendants()
+
+		for _, obj in ipairs(descendants) do
+			local name = obj.Name
+
+			if name:lower():find(query, 1, true) then
+				if not seen[obj] then
+					seen[obj] = true
+					table.insert(results, obj)
+				end
+			end
+		end
+	end
+
+	for _, obj in ipairs(results) do
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(1, -4, 0, 42)
+		button.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+
+		local path = obj:GetFullName()
+
+		button.Text = obj.Name .. "\n" .. path
+		button.TextColor3 = Color3.new(1, 1, 1)
+		button.TextSize = 11
+		button.Font = Enum.Font.Gotham
+		button.TextWrapped = true
+		button.ZIndex = 22
+		button.Parent = globalList
+
+		Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+
+		button.MouseButton1Click:Connect(function()
+			-- Add actual Instance to selectable list
+			globalInstances[obj] = obj
+
+			globalFrame.Visible = false
+
+			-- Refresh main list
+			refresh()
+		end)
+	end
+
+	task.wait()
+
+	globalList.CanvasSize = UDim2.new(
+		0,
+		0,
+		0,
+		globalLayout.AbsoluteContentSize.Y + 5
+	)
+end
+
+--// Main list refresh
+function refresh()
+	for _, child in ipairs(list:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	local search = searchBox.Text:lower()
+	local seenNames = {}
+
+	-- Interactables
+	for _, obj in ipairs(interactables:GetChildren()) do
+		local name = obj.Name
+
+		if not seenNames[name] then
+			seenNames[name] = true
+
+			if search == "" or name:lower():find(search, 1, true) then
+				local button = Instance.new("TextButton")
+				button.Size = UDim2.new(1, -4, 0, 34)
+				button.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+				button.Text = name
+				button.TextColor3 = Color3.new(1, 1, 1)
+				button.TextSize = 13
+				button.Font = Enum.Font.Gotham
+				button.Parent = list
+
+				Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+
+				button.MouseButton1Click:Connect(function()
+					Event:FireServer("Mix", obj, 2)
+				end)
+			end
+		end
+	end
+
+	-- Global selected Instances
+	for obj, selected in pairs(globalInstances) do
+		if selected and selected.Parent then
+			local name = selected.Name
+
+			if search == "" or name:lower():find(search, 1, true) then
+				local button = Instance.new("TextButton")
+				button.Size = UDim2.new(1, -4, 0, 34)
+				button.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+				button.Text = name
+				button.TextColor3 = Color3.new(1, 1, 1)
+				button.TextSize = 13
+				button.Font = Enum.Font.Gotham
+				button.Parent = list
+
+				Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+
+				button.MouseButton1Click:Connect(function()
+					Event:FireServer("Mix", selected, 2)
+				end)
+			end
+		end
+	end
+
+	task.wait()
+
+	list.CanvasSize = UDim2.new(
+		0,
+		0,
+		0,
+		layout.AbsoluteContentSize.Y + 5
+	)
+end
+
+--// Open global search
+gear.MouseButton1Click:Connect(function()
+	globalFrame.Visible = not globalFrame.Visible
+
+	if globalFrame.Visible then
+		globalSearch:CaptureFocus()
+	end
+end)
+
+closeGlobal.MouseButton1Click:Connect(function()
+	globalFrame.Visible = false
+end)
+
+globalSearchButton.MouseButton1Click:Connect(globalSearchRefresh)
+
+globalSearch.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		globalSearchRefresh()
+	end
+end)
+
+--// Main search
+searchButton.MouseButton1Click:Connect(refresh)
+
+searchBox.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		refresh()
+	end
+end)
+
+--// Minimize
+local minimized = false
+local normalSize = main.Size
+
+minimize.MouseButton1Click:Connect(function()
+	minimized = not minimized
+
+	if minimized then
+		content.Visible = false
+		main.Size = UDim2.new(0, 240, 0, 35)
+		minimize.Text = "+"
+	else
+		content.Visible = true
+		main.Size = normalSize
+		minimize.Text = "-"
+	end
+end)
+
+--// Main UI dragging
+local dragging = false
+local dragStart
+local startPosition
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		dragging = true
+		dragStart = input.Position
+		startPosition = main.Position
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (
+		input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch
+	) then
+
+		local delta = input.Position - dragStart
+
+		main.Position = UDim2.new(
+			startPosition.X.Scale,
+			startPosition.X.Offset + delta.X,
+			startPosition.Y.Scale,
+			startPosition.Y.Offset + delta.Y
+		)
+	end
+end)
+
+refresh()
