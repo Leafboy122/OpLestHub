@@ -7,7 +7,7 @@ local StarterPlayer = game:GetService("StarterPlayer")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
-local interactables = workspace.GameAssets.Interactables
+local interactables = workspace.GameAssets.Interactables.Bottles
 local Event = ReplicatedStorage.Remotes.ToolAction
 
 --// ScreenGui
