@@ -1,0 +1,1345 @@
+--// Poke Haven Mix Hub
+--// Uses the game's actual DrinkClass.RecipeLib recipes
+--// Bottle location: workspace.GameAssets.Interactables.Bottles
+--// 3 Second Delay Between Recipe Ingredients
+--// Recipe format: Recipe Name [Glass]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local Event = ReplicatedStorage
+	:WaitForChild("Remotes")
+	:WaitForChild("ToolAction")
+
+local GameAssets = workspace:WaitForChild("GameAssets")
+local Interactables = GameAssets:WaitForChild("Interactables")
+local Bottles = Interactables:WaitForChild("Bottles")
+
+--==================================================
+-- SETTINGS
+--==================================================
+
+local MIX_DELAY = 3
+
+--==================================================
+-- ACTUAL GAME RECIPE LIBRARY
+--==================================================
+
+local RecipeLib
+
+local success, result = pcall(function()
+	return require(
+		ReplicatedStorage
+			:WaitForChild("Modules")
+			:WaitForChild("Classes")
+			:WaitForChild("DrinkClass")
+			:WaitForChild("RecipeLib")
+	)
+end)
+
+if success then
+	RecipeLib = result
+else
+	warn("[Poke Haven Mix Hub] Failed to load DrinkClass.RecipeLib:", result)
+	return
+end
+
+local Recipes = {}
+
+--==================================================
+-- LOAD ACTUAL RECIPES
+--==================================================
+
+local function loadRecipeCategory(categoryName, glassName)
+	local category = RecipeLib.Recipes and RecipeLib.Recipes[categoryName]
+
+	if not category then
+		warn(
+			"[Poke Haven Mix Hub] Recipe category not found:",
+			categoryName
+		)
+		return
+	end
+
+	for recipeName, ingredients in pairs(category) do
+		if type(ingredients) == "table" then
+			Recipes[recipeName] = {
+				Ingredients = ingredients,
+				Glass = glassName
+			}
+		end
+	end
+end
+
+-- These are the categories used by the game's NoteBookUI.
+loadRecipeCategory("Cup", "Cup")
+loadRecipeCategory("Margarita", "Margarita")
+
+print(
+	"[Poke Haven Mix Hub] Loaded",
+	tostring((function()
+		local count = 0
+
+		for _ in pairs(Recipes) do
+			count += 1
+		end
+
+		return count
+	end)()),
+	"actual game recipes."
+)
+
+--==================================================
+-- REMOVE OLD GUI
+--==================================================
+
+local old = PlayerGui:FindFirstChild("PokeHavenMixHub")
+
+if old then
+	old:Destroy()
+end
+
+--==================================================
+-- ALIASES
+--==================================================
+
+local aliases = {
+	["bechrovka"] = "becherovka",
+	["becherovka"] = "becherovka",
+
+	["curacao"] = "curacoas",
+	["curacaos"] = "curacoas",
+	["curacoas"] = "curacoas",
+
+	["icetea"] = "icedtea",
+	["icedtea"] = "icedtea",
+
+	["coke"] = "cola",
+	["cola"] = "cola",
+
+	["maktell"] = "martel",
+	["martel"] = "martel",
+
+	["paranoid"] = "pernoid",
+	["pernoid"] = "pernoid",
+
+	["bailey"] = "baileys",
+	["baileys"] = "baileys",
+
+	["jäegermeister"] = "jaegermeister",
+	["jaegermeister"] = "jaegermeister",
+
+	["ramzotte"] = "ramazzotti",
+	["ramazotti"] = "ramazzotti",
+	["ramazzotti"] = "ramazzotti",
+}
+
+--==================================================
+-- NORMALIZATION
+--==================================================
+
+local function normalizeName(name)
+
+	name = tostring(name):lower()
+
+	name = name:gsub("ä", "a")
+	name = name:gsub("á", "a")
+	name = name:gsub("à", "a")
+	name = name:gsub("â", "a")
+
+	name = name:gsub("é", "e")
+	name = name:gsub("è", "e")
+	name = name:gsub("ê", "e")
+
+	name = name:gsub("í", "i")
+	name = name:gsub("ì", "i")
+
+	name = name:gsub("ó", "o")
+	name = name:gsub("ò", "o")
+
+	name = name:gsub("ú", "u")
+	name = name:gsub("ù", "u")
+
+	name = name:gsub("ñ", "n")
+
+	name = name:gsub("&", "and")
+
+	name = name:gsub("[^%w]", "")
+
+	return name
+end
+
+local function normalizeIngredient(name)
+
+	local normalized = normalizeName(name)
+
+	if aliases[normalized] then
+		normalized = aliases[normalized]
+	end
+
+	return normalized
+end
+
+--==================================================
+-- BOTTLE CACHE
+--==================================================
+
+local BottleCache = {}
+local BottleNormalizedNames = {}
+
+local function rebuildBottleCache()
+
+	table.clear(BottleCache)
+	table.clear(BottleNormalizedNames)
+
+	for _, obj in ipairs(Bottles:GetDescendants()) do
+
+		if obj:IsA("Model")
+			or obj:IsA("BasePart")
+			or obj:IsA("Tool")
+			or obj:IsA("Folder") then
+
+			table.insert(BottleCache, obj)
+
+			BottleNormalizedNames[obj] =
+				normalizeIngredient(obj.Name)
+
+		end
+
+	end
+
+end
+
+rebuildBottleCache()
+
+--==================================================
+-- BOTTLE CACHE UPDATES
+--==================================================
+
+Bottles.DescendantAdded:Connect(function(obj)
+
+	task.defer(function()
+
+		if not obj.Parent then
+			return
+		end
+
+		if obj:IsA("Model")
+			or obj:IsA("BasePart")
+			or obj:IsA("Tool")
+			or obj:IsA("Folder") then
+
+			table.insert(BottleCache, obj)
+
+			BottleNormalizedNames[obj] =
+				normalizeIngredient(obj.Name)
+
+		end
+
+	end)
+
+end)
+
+Bottles.DescendantRemoving:Connect(function(obj)
+
+	BottleNormalizedNames[obj] = nil
+
+	for i = #BottleCache, 1, -1 do
+
+		if BottleCache[i] == obj then
+			table.remove(BottleCache, i)
+			break
+		end
+
+	end
+
+end)
+
+--==================================================
+-- LEVENSHTEIN
+--==================================================
+
+local function levenshtein(a, b)
+
+	local lenA = #a
+	local lenB = #b
+
+	if lenA == 0 then
+		return lenB
+	end
+
+	if lenB == 0 then
+		return lenA
+	end
+
+	local previous = {}
+
+	for j = 0, lenB do
+		previous[j] = j
+	end
+
+	for i = 1, lenA do
+
+		local current = {}
+		current[0] = i
+
+		for j = 1, lenB do
+
+			local cost =
+				a:sub(i, i) == b:sub(j, j)
+				and 0
+				or 1
+
+			current[j] = math.min(
+				current[j - 1] + 1,
+				previous[j] + 1,
+				previous[j - 1] + cost
+			)
+
+		end
+
+		previous = current
+
+	end
+
+	return previous[lenB]
+end
+
+local function similarity(a, b)
+
+	if a == b then
+		return 1
+	end
+
+	if a == "" or b == "" then
+		return 0
+	end
+
+	if a:find(b, 1, true)
+		or b:find(a, 1, true) then
+
+		local shorter = math.min(#a, #b)
+		local longer = math.max(#a, #b)
+
+		return 0.90 + ((shorter / longer) * 0.10)
+	end
+
+	local distance = levenshtein(a, b)
+	local longest = math.max(#a, #b)
+
+	return 1 - distance / longest
+end
+
+--==================================================
+-- SELECTED INSTANCES
+--==================================================
+
+local selectedInstances = {}
+
+--==================================================
+-- FIND BOTTLE
+--==================================================
+
+local function findIngredient(ingredientName)
+
+	local wanted = normalizeIngredient(ingredientName)
+
+	-- EXACT
+	for _, obj in ipairs(BottleCache) do
+
+		if obj and obj.Parent then
+
+			local actual =
+				BottleNormalizedNames[obj]
+
+			if actual == wanted then
+
+				print(
+					"[Poke Haven Mix Hub] Exact:",
+					ingredientName,
+					"->",
+					obj.Name
+				)
+
+				selectedInstances[obj:GetFullName()] = obj
+
+				return obj
+			end
+		end
+	end
+
+	-- CONTAINS
+	for _, obj in ipairs(BottleCache) do
+
+		if obj and obj.Parent then
+
+			local actual =
+				BottleNormalizedNames[obj]
+
+			if actual
+				and (
+					actual:find(wanted, 1, true)
+					or wanted:find(actual, 1, true)
+				) then
+
+				print(
+					"[Poke Haven Mix Hub] Similar:",
+					ingredientName,
+					"->",
+					obj.Name
+				)
+
+				selectedInstances[obj:GetFullName()] = obj
+
+				return obj
+			end
+		end
+	end
+
+	-- FUZZY
+	local bestObject = nil
+	local bestScore = 0
+
+	for _, obj in ipairs(BottleCache) do
+
+		if obj and obj.Parent then
+
+			local actual =
+				BottleNormalizedNames[obj]
+
+			if actual then
+
+				local score =
+					similarity(wanted, actual)
+
+				if #wanted >= 3
+					and #actual >= 3 then
+
+					local wantedPrefix =
+						wanted:sub(
+							1,
+							math.min(4, #wanted)
+						)
+
+					local actualPrefix =
+						actual:sub(
+							1,
+							math.min(4, #actual)
+						)
+
+					if wantedPrefix == actualPrefix then
+						score += 0.08
+					end
+				end
+
+				if score > bestScore then
+					bestScore = score
+					bestObject = obj
+				end
+			end
+		end
+	end
+
+	if bestObject
+		and bestScore >= 0.62 then
+
+		print(
+			"[Poke Haven Mix Hub] Fuzzy:",
+			ingredientName,
+			"->",
+			bestObject.Name,
+			math.floor(bestScore * 100) .. "%"
+		)
+
+		selectedInstances[bestObject:GetFullName()] =
+			bestObject
+
+		return bestObject
+	end
+
+	warn(
+		"[Poke Haven Mix Hub] Missing ingredient:",
+		ingredientName
+	)
+
+	return nil
+end
+
+--==================================================
+-- GUI
+--==================================================
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PokeHavenMixHub"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.Parent = PlayerGui
+
+--==================================================
+-- MAIN
+--==================================================
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 240, 0, 300)
+Main.Position = UDim2.new(0.5, -120, 0.5, -150)
+Main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+Main.BorderSizePixel = 0
+Main.Parent = ScreenGui
+
+Instance.new("UICorner", Main).CornerRadius =
+	UDim.new(0, 10)
+
+--==================================================
+-- TITLE
+--==================================================
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -145, 0, 35)
+Title.Position = UDim2.new(0, 10, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "Poke Haven Mix"
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.TextSize = 15
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Main
+
+--==================================================
+-- DRAG
+--==================================================
+
+local dragging = false
+local dragStart
+local startPos
+
+Title.InputBegan:Connect(function(input)
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		dragging = true
+		dragStart = input.Position
+		startPos = Main.Position
+
+		input.Changed:Connect(function()
+
+			if input.UserInputState ==
+				Enum.UserInputState.End then
+
+				dragging = false
+
+			end
+
+		end)
+
+	end
+
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+
+	if not dragging then
+		return
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch then
+
+		local delta =
+			input.Position - dragStart
+
+		Main.Position = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset + delta.X,
+			startPos.Y.Scale,
+			startPos.Y.Offset + delta.Y
+		)
+
+	end
+
+end)
+
+--==================================================
+-- MINIMIZE
+--==================================================
+
+local Minimize = Instance.new("TextButton")
+Minimize.Size = UDim2.new(0, 28, 0, 28)
+Minimize.Position = UDim2.new(1, -64, 0, 4)
+Minimize.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Minimize.Text = "-"
+Minimize.TextColor3 = Color3.new(1, 1, 1)
+Minimize.TextSize = 18
+Minimize.Font = Enum.Font.GothamBold
+Minimize.Parent = Main
+
+Instance.new("UICorner", Minimize).CornerRadius =
+	UDim.new(0, 7)
+
+--==================================================
+-- GEAR
+--==================================================
+
+local Gear = Instance.new("TextButton")
+Gear.Size = UDim2.new(0, 28, 0, 28)
+Gear.Position = UDim2.new(1, -98, 0, 4)
+Gear.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Gear.Text = "⚙"
+Gear.TextColor3 = Color3.new(1, 1, 1)
+Gear.TextSize = 17
+Gear.Font = Enum.Font.GothamBold
+Gear.Parent = Main
+
+Instance.new("UICorner", Gear).CornerRadius =
+	UDim.new(0, 7)
+
+--==================================================
+-- BOOK
+--==================================================
+
+local Book = Instance.new("TextButton")
+Book.Size = UDim2.new(0, 28, 0, 28)
+Book.Position = UDim2.new(1, -132, 0, 4)
+Book.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+Book.Text = "📖"
+Book.TextColor3 = Color3.new(1, 1, 1)
+Book.TextSize = 16
+Book.Font = Enum.Font.GothamBold
+Book.Parent = Main
+
+Instance.new("UICorner", Book).CornerRadius =
+	UDim.new(0, 7)
+
+--==================================================
+-- SEARCH
+--==================================================
+
+local SearchBox = Instance.new("TextBox")
+SearchBox.Size = UDim2.new(1, -80, 0, 30)
+SearchBox.Position = UDim2.new(0, 10, 0, 42)
+SearchBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+SearchBox.PlaceholderText = "Search..."
+SearchBox.Text = ""
+SearchBox.TextColor3 = Color3.new(1, 1, 1)
+SearchBox.PlaceholderColor3 =
+	Color3.fromRGB(150, 150, 150)
+SearchBox.TextSize = 13
+SearchBox.Font = Enum.Font.Gotham
+SearchBox.ClearTextOnFocus = false
+SearchBox.Parent = Main
+
+Instance.new("UICorner", SearchBox).CornerRadius =
+	UDim.new(0, 7)
+
+local SearchButton = Instance.new("TextButton")
+SearchButton.Size = UDim2.new(0, 60, 0, 30)
+SearchButton.Position = UDim2.new(1, -70, 0, 42)
+SearchButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+SearchButton.Text = "Search"
+SearchButton.TextColor3 = Color3.new(1, 1, 1)
+SearchButton.TextSize = 11
+SearchButton.Font = Enum.Font.GothamBold
+SearchButton.Parent = Main
+
+Instance.new("UICorner", SearchButton).CornerRadius =
+	UDim.new(0, 7)
+
+--==================================================
+-- MAIN LIST
+--==================================================
+
+local List = Instance.new("ScrollingFrame")
+List.Size = UDim2.new(1, -20, 1, -82)
+List.Position = UDim2.new(0, 10, 0, 78)
+List.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+List.BorderSizePixel = 0
+List.ScrollBarThickness = 4
+List.Parent = Main
+
+Instance.new("UICorner", List).CornerRadius =
+	UDim.new(0, 7)
+
+local ListLayout = Instance.new("UIListLayout")
+ListLayout.Padding = UDim.new(0, 5)
+ListLayout.Parent = List
+
+--==================================================
+-- GLOBAL SEARCH WINDOW
+--==================================================
+
+local GlobalFrame = Instance.new("Frame")
+GlobalFrame.Size = UDim2.new(0, 300, 0, 360)
+GlobalFrame.Position = UDim2.new(0.5, -150, 0.5, -180)
+GlobalFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+GlobalFrame.BorderSizePixel = 0
+GlobalFrame.Visible = false
+GlobalFrame.ZIndex = 20
+GlobalFrame.Parent = ScreenGui
+
+Instance.new("UICorner", GlobalFrame).CornerRadius =
+	UDim.new(0, 10)
+
+local GlobalTitle = Instance.new("TextLabel")
+GlobalTitle.Size = UDim2.new(1, -45, 0, 35)
+GlobalTitle.Position = UDim2.new(0, 10, 0, 0)
+GlobalTitle.BackgroundTransparency = 1
+GlobalTitle.Text = "Global Instance Search"
+GlobalTitle.TextColor3 = Color3.new(1, 1, 1)
+GlobalTitle.TextSize = 14
+GlobalTitle.Font = Enum.Font.GothamBold
+GlobalTitle.TextXAlignment = Enum.TextXAlignment.Left
+GlobalTitle.ZIndex = 21
+GlobalTitle.Parent = GlobalFrame
+
+local GlobalClose = Instance.new("TextButton")
+GlobalClose.Size = UDim2.new(0, 28, 0, 28)
+GlobalClose.Position = UDim2.new(1, -35, 0, 4)
+GlobalClose.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+GlobalClose.Text = "X"
+GlobalClose.TextColor3 = Color3.new(1, 1, 1)
+GlobalClose.TextSize = 12
+GlobalClose.Font = Enum.Font.GothamBold
+GlobalClose.ZIndex = 21
+GlobalClose.Parent = GlobalFrame
+
+Instance.new("UICorner", GlobalClose).CornerRadius =
+	UDim.new(0, 7)
+
+local GlobalBox = Instance.new("TextBox")
+GlobalBox.Size = UDim2.new(1, -80, 0, 30)
+GlobalBox.Position = UDim2.new(0, 10, 0, 42)
+GlobalBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+GlobalBox.PlaceholderText = "Search instances..."
+GlobalBox.Text = ""
+GlobalBox.TextColor3 = Color3.new(1, 1, 1)
+GlobalBox.PlaceholderColor3 =
+	Color3.fromRGB(150, 150, 150)
+GlobalBox.TextSize = 12
+GlobalBox.Font = Enum.Font.Gotham
+GlobalBox.ClearTextOnFocus = false
+GlobalBox.ZIndex = 21
+GlobalBox.Parent = GlobalFrame
+
+Instance.new("UICorner", GlobalBox).CornerRadius =
+	UDim.new(0, 7)
+
+local GlobalSearch = Instance.new("TextButton")
+GlobalSearch.Size = UDim2.new(0, 60, 0, 30)
+GlobalSearch.Position = UDim2.new(1, -70, 0, 42)
+GlobalSearch.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+GlobalSearch.Text = "Search"
+GlobalSearch.TextColor3 = Color3.new(1, 1, 1)
+GlobalSearch.TextSize = 11
+GlobalSearch.Font = Enum.Font.GothamBold
+GlobalSearch.ZIndex = 21
+GlobalSearch.Parent = GlobalFrame
+
+Instance.new("UICorner", GlobalSearch).CornerRadius =
+	UDim.new(0, 7)
+
+local GlobalList = Instance.new("ScrollingFrame")
+GlobalList.Size = UDim2.new(1, -20, 1, -82)
+GlobalList.Position = UDim2.new(0, 10, 0, 78)
+GlobalList.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+GlobalList.BorderSizePixel = 0
+GlobalList.ScrollBarThickness = 4
+GlobalList.ZIndex = 21
+GlobalList.Parent = GlobalFrame
+
+Instance.new("UICorner", GlobalList).CornerRadius =
+	UDim.new(0, 7)
+
+local GlobalLayout = Instance.new("UIListLayout")
+GlobalLayout.Padding = UDim.new(0, 5)
+GlobalLayout.Parent = GlobalList
+
+--==================================================
+-- RECIPE WINDOW
+--==================================================
+
+local RecipeFrame = Instance.new("Frame")
+RecipeFrame.Size = UDim2.new(0, 300, 0, 390)
+RecipeFrame.Position = UDim2.new(0.5, -150, 0.5, -195)
+RecipeFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+RecipeFrame.BorderSizePixel = 0
+RecipeFrame.Visible = false
+RecipeFrame.ZIndex = 30
+RecipeFrame.Parent = ScreenGui
+
+Instance.new("UICorner", RecipeFrame).CornerRadius =
+	UDim.new(0, 10)
+
+local RecipeTitle = Instance.new("TextLabel")
+RecipeTitle.Size = UDim2.new(1, -45, 0, 35)
+RecipeTitle.Position = UDim2.new(0, 10, 0, 0)
+RecipeTitle.BackgroundTransparency = 1
+RecipeTitle.Text = "📖 Recipes"
+RecipeTitle.TextColor3 = Color3.new(1, 1, 1)
+RecipeTitle.TextSize = 15
+RecipeTitle.Font = Enum.Font.GothamBold
+RecipeTitle.TextXAlignment = Enum.TextXAlignment.Left
+RecipeTitle.ZIndex = 31
+RecipeTitle.Parent = RecipeFrame
+
+local RecipeClose = Instance.new("TextButton")
+RecipeClose.Size = UDim2.new(0, 28, 0, 28)
+RecipeClose.Position = UDim2.new(1, -35, 0, 4)
+RecipeClose.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+RecipeClose.Text = "X"
+RecipeClose.TextColor3 = Color3.new(1, 1, 1)
+RecipeClose.TextSize = 12
+RecipeClose.Font = Enum.Font.GothamBold
+RecipeClose.ZIndex = 31
+RecipeClose.Parent = RecipeFrame
+
+Instance.new("UICorner", RecipeClose).CornerRadius =
+	UDim.new(0, 7)
+
+local RecipeSearch = Instance.new("TextBox")
+RecipeSearch.Size = UDim2.new(1, -20, 0, 30)
+RecipeSearch.Position = UDim2.new(0, 10, 0, 42)
+RecipeSearch.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+RecipeSearch.PlaceholderText = "Search recipes..."
+RecipeSearch.Text = ""
+RecipeSearch.TextColor3 = Color3.new(1, 1, 1)
+RecipeSearch.PlaceholderColor3 =
+	Color3.fromRGB(150, 150, 150)
+RecipeSearch.TextSize = 12
+RecipeSearch.Font = Enum.Font.Gotham
+RecipeSearch.ClearTextOnFocus = false
+RecipeSearch.ZIndex = 31
+RecipeSearch.Parent = RecipeFrame
+
+Instance.new("UICorner", RecipeSearch).CornerRadius =
+	UDim.new(0, 7)
+
+local RecipeList = Instance.new("ScrollingFrame")
+RecipeList.Size = UDim2.new(1, -20, 1, -82)
+RecipeList.Position = UDim2.new(0, 10, 0, 78)
+RecipeList.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+RecipeList.BorderSizePixel = 0
+RecipeList.ScrollBarThickness = 4
+RecipeList.ZIndex = 31
+RecipeList.Parent = RecipeFrame
+
+Instance.new("UICorner", RecipeList).CornerRadius =
+	UDim.new(0, 7)
+
+local RecipeLayout = Instance.new("UIListLayout")
+RecipeLayout.Padding = UDim.new(0, 5)
+RecipeLayout.Parent = RecipeList
+
+--==================================================
+-- CLEAR HELPERS
+--==================================================
+
+local function clearButtons(frame)
+
+	for _, child in ipairs(frame:GetChildren()) do
+
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+
+	end
+
+end
+
+--==================================================
+-- MAIN LIST
+--==================================================
+
+local function addMainButton(obj)
+
+	local Button = Instance.new("TextButton")
+
+	Button.Size = UDim2.new(1, -8, 0, 38)
+	Button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	Button.Text = obj.Name
+	Button.TextColor3 = Color3.new(1, 1, 1)
+	Button.TextSize = 12
+	Button.Font = Enum.Font.Gotham
+	Button.TextXAlignment = Enum.TextXAlignment.Left
+	Button.Parent = List
+
+	Instance.new("UICorner", Button).CornerRadius =
+		UDim.new(0, 6)
+
+	Button.MouseButton1Click:Connect(function()
+
+		if obj and obj.Parent then
+
+			Event:FireServer(
+				"Mix",
+				obj,
+				2
+			)
+
+		end
+
+	end)
+
+end
+
+local function refreshMain()
+
+	clearButtons(List)
+
+	local search = SearchBox.Text:lower()
+	local added = {}
+
+	for _, obj in ipairs(Bottles:GetChildren()) do
+
+		if obj
+			and obj.Parent
+			and not added[obj.Name] then
+
+			if search == ""
+				or obj.Name:lower():find(
+					search,
+					1,
+					true
+				) then
+
+				added[obj.Name] = true
+				addMainButton(obj)
+
+			end
+
+		end
+
+	end
+
+	for _, obj in pairs(selectedInstances) do
+
+		if obj
+			and obj.Parent
+			and not added[obj.Name] then
+
+			if search == ""
+				or obj.Name:lower():find(
+					search,
+					1,
+					true
+				) then
+
+				added[obj.Name] = true
+				addMainButton(obj)
+
+			end
+
+		end
+
+	end
+
+	task.defer(function()
+
+		List.CanvasSize = UDim2.new(
+			0,
+			0,
+			0,
+			ListLayout.AbsoluteContentSize.Y + 10
+		)
+
+	end)
+
+end
+
+--==================================================
+-- GLOBAL SEARCH
+--==================================================
+
+local function globalSearchRefresh()
+
+	clearButtons(GlobalList)
+
+	local search = GlobalBox.Text:lower()
+
+	local count = 0
+	local MAX_RESULTS = 100
+
+	for _, obj in ipairs(BottleCache) do
+
+		if count >= MAX_RESULTS then
+			break
+		end
+
+		if obj
+			and obj.Parent then
+
+			local name =
+				obj.Name:lower()
+
+			if search == ""
+				or name:find(search, 1, true) then
+
+				count += 1
+
+				local Button =
+					Instance.new("TextButton")
+
+				Button.Size =
+					UDim2.new(1, -8, 0, 48)
+
+				Button.BackgroundColor3 =
+					Color3.fromRGB(30, 30, 30)
+
+				Button.Text =
+					obj.Name ..
+					"\n" ..
+					obj:GetFullName()
+
+				Button.TextColor3 =
+					Color3.new(1, 1, 1)
+
+				Button.TextSize = 10
+				Button.Font = Enum.Font.Gotham
+				Button.TextXAlignment =
+					Enum.TextXAlignment.Left
+
+				Button.TextWrapped = true
+				Button.ZIndex = 22
+				Button.Parent = GlobalList
+
+				Instance.new("UICorner", Button).CornerRadius =
+					UDim.new(0, 6)
+
+				Button.MouseButton1Click:Connect(function()
+
+					if obj and obj.Parent then
+
+						selectedInstances[
+							obj:GetFullName()
+						] = obj
+
+						GlobalFrame.Visible = false
+
+						refreshMain()
+
+					end
+
+				end)
+
+			end
+
+		end
+
+	end
+
+	task.defer(function()
+
+		GlobalList.CanvasSize = UDim2.new(
+			0,
+			0,
+			0,
+			GlobalLayout.AbsoluteContentSize.Y + 10
+		)
+
+	end)
+
+end
+
+--==================================================
+-- RECIPE LIST
+--==================================================
+
+local function refreshRecipes()
+
+	clearButtons(RecipeList)
+
+	local search =
+		RecipeSearch.Text:lower()
+
+	for recipeName, recipeData in pairs(Recipes) do
+
+		local ingredients = recipeData.Ingredients
+		local glassName = recipeData.Glass
+
+		if search == ""
+			or recipeName:lower():find(
+				search,
+				1,
+				true
+			) then
+
+			local Button =
+				Instance.new("TextButton")
+
+			Button.Size =
+				UDim2.new(1, -8, 0, 42)
+
+			Button.BackgroundColor3 =
+				Color3.fromRGB(30, 30, 30)
+
+			-- RECIPE NAME + GLASS
+			Button.Text =
+				recipeName ..
+				" [" ..
+				tostring(glassName) ..
+				"]"
+
+			Button.TextColor3 =
+				Color3.new(1, 1, 1)
+
+			Button.TextSize = 12
+			Button.Font = Enum.Font.GothamBold
+			Button.TextXAlignment =
+				Enum.TextXAlignment.Left
+
+			Button.ZIndex = 32
+			Button.Parent = RecipeList
+
+			Instance.new("UICorner", Button).CornerRadius =
+				UDim.new(0, 6)
+
+			Button.MouseButton1Click:Connect(function()
+
+				if Button:GetAttribute("Mixing") then
+					return
+				end
+
+				Button:SetAttribute(
+					"Mixing",
+					true
+				)
+
+				Button.Text =
+					recipeName ..
+					" [" ..
+					tostring(glassName) ..
+					"] • Mixing..."
+
+				task.spawn(function()
+
+					for index, ingredientName
+						in ipairs(ingredients) do
+
+						local ingredient =
+							findIngredient(
+								ingredientName
+							)
+
+						if ingredient
+							and ingredient.Parent then
+
+							print(
+								"[Poke Haven Mix Hub] Mixing:",
+								ingredientName,
+								"->",
+								ingredient.Name
+							)
+
+							Event:FireServer(
+								"Mix",
+								ingredient,
+								2
+							)
+
+						else
+
+							warn(
+								"[Poke Haven Mix Hub] Could not find:",
+								ingredientName,
+								"for",
+								recipeName
+							)
+
+						end
+
+						--==================================================
+						-- 3 SECOND DELAY
+						--==================================================
+
+						if index < #ingredients then
+							task.wait(MIX_DELAY)
+						end
+
+					end
+
+					Button:SetAttribute(
+						"Mixing",
+						false
+					)
+
+					if Button.Parent then
+
+						Button.Text =
+							recipeName ..
+							" [" ..
+							tostring(glassName) ..
+							"]"
+
+					end
+
+				end)
+
+			end)
+
+		end
+
+	end
+
+	task.defer(function()
+
+		RecipeList.CanvasSize =
+			UDim2.new(
+				0,
+				0,
+				0,
+				RecipeLayout.AbsoluteContentSize.Y + 10
+			)
+
+	end)
+
+end
+
+--==================================================
+-- BUTTON EVENTS
+--==================================================
+
+SearchButton.MouseButton1Click:Connect(
+	refreshMain
+)
+
+SearchBox.FocusLost:Connect(
+	refreshMain
+)
+
+Gear.MouseButton1Click:Connect(function()
+
+	GlobalFrame.Visible =
+		not GlobalFrame.Visible
+
+	if GlobalFrame.Visible then
+
+		RecipeFrame.Visible = false
+
+		globalSearchRefresh()
+
+	end
+
+end)
+
+Book.MouseButton1Click:Connect(function()
+
+	RecipeFrame.Visible =
+		not RecipeFrame.Visible
+
+	if RecipeFrame.Visible then
+
+		GlobalFrame.Visible = false
+
+		refreshRecipes()
+
+	end
+
+end)
+
+GlobalClose.MouseButton1Click:Connect(function()
+
+	GlobalFrame.Visible = false
+
+end)
+
+RecipeClose.MouseButton1Click:Connect(function()
+
+	RecipeFrame.Visible = false
+
+end)
+
+GlobalSearch.MouseButton1Click:Connect(
+	globalSearchRefresh
+)
+
+GlobalBox.FocusLost:Connect(
+	globalSearchRefresh
+)
+
+RecipeSearch.FocusLost:Connect(
+	refreshRecipes
+)
+
+--==================================================
+-- MINIMIZE
+--==================================================
+
+local minimized = false
+
+Minimize.MouseButton1Click:Connect(function()
+
+	minimized = not minimized
+
+	SearchBox.Visible =
+		not minimized
+
+	SearchButton.Visible =
+		not minimized
+
+	List.Visible =
+		not minimized
+
+	if minimized then
+
+		Main.Size =
+			UDim2.new(0, 240, 0, 40)
+
+	else
+
+		Main.Size =
+			UDim2.new(0, 240, 0, 300)
+
+	end
+
+end)
+
+--==================================================
+-- BOTTLE UPDATES
+--==================================================
+
+Bottles.ChildAdded:Connect(function()
+
+	task.defer(function()
+		rebuildBottleCache()
+		refreshMain()
+	end)
+
+end)
+
+Bottles.ChildRemoved:Connect(function()
+
+	task.defer(function()
+		rebuildBottleCache()
+		refreshMain()
+	end)
+
+end)
+
+--==================================================
+-- INITIALIZE
+--==================================================
+
+refreshMain()
+refreshRecipes()
+
+print(
+	"[Poke Haven Mix Hub] Loaded successfully."
+)
+
+print(
+	"[Poke Haven Mix Hub] Using actual DrinkClass.RecipeLib recipes."
+)
+
+print(
+	"[Poke Haven Mix Hub] Bottles:",
+	Bottles:GetFullName()
+)
+
+print(
+	"[Poke Haven Mix Hub] Recipe delay:",
+	MIX_DELAY,
+	"seconds."
+)
