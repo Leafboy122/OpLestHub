@@ -1,212 +1,451 @@
 --// Poke Haven Mix Hub
---// Uses the game's actual DrinkClass.RecipeLib recipes
---// Bottle location: workspace.GameAssets.Interactables.Bottles
---// 3 Second Delay Between Recipe Ingredients
---// Recipe format: Recipe Name [Glass]
+--// Actual DrinkClass.RecipeLib recipes
+--//
+--// FEATURES
+--// • Actual game recipes
+--// • Cup / Margarita recipe categories
+--// • Exact ingredient matching
+--// • 2 second wait between ingredients
+--// • Shaker animation watcher
+--// • If shaker starts after an ingredient was sent:
+--//      wait for it to finish and retry that ingredient
+--// • Candy button = fire every CupCosmetic
+--// • Walk toggle beside candy
+--// • When Walk is ON:
+--//      Find each recipe ingredient nearby
+--//      Walk toward that ingredient
+--//      Stop at 5 studs
+--//      Mix it
+--//      Move to the next ingredient
+--//
+--// Shaker animation:
+--// rbxassetid://17638389864
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
-local Event = ReplicatedStorage
-	:WaitForChild("Remotes")
-	:WaitForChild("ToolAction")
+local Event =
+	ReplicatedStorage
+		:WaitForChild("Remotes")
+		:WaitForChild("ToolAction")
 
-local GameAssets = workspace:WaitForChild("GameAssets")
-local Interactables = GameAssets:WaitForChild("Interactables")
-local Bottles = Interactables:WaitForChild("Bottles")
+local GameAssets =
+	workspace:WaitForChild("GameAssets")
+
+local Interactables =
+	GameAssets:WaitForChild("Interactables")
+
+local Bottles =
+	Interactables:WaitForChild("Bottles")
+
+local CupCosmetics =
+	Interactables:WaitForChild("CupCosmetics")
 
 --==================================================
 -- SETTINGS
 --==================================================
 
-local MIX_DELAY = 3
+local MIX_ANIMATION_ID =
+	"rbxassetid://17638389864"
+
+local BETWEEN_INGREDIENT_DELAY =
+	2
+
+local STOP_DISTANCE =
+	10
+
+local WALK_TIMEOUT =
+	30
+
+local INGREDIENT_SCAN_RADIUS =
+	150
 
 --==================================================
--- ACTUAL GAME RECIPE LIBRARY
+-- WALK TOGGLE
+--==================================================
+
+local walkToIngredients =
+	false
+
+--==================================================
+-- SHAKER STATE
+--==================================================
+
+local shakerAnimationPlaying =
+	false
+
+local shakerTracks =
+	{}
+
+-- Counts every time the shaker animation starts.
+-- This lets the mixer detect an animation that begins
+-- AFTER an ingredient was already sent.
+local shakerStartCounter =
+	0
+
+--==================================================
+-- ANIMATION CHECK
+--==================================================
+
+local function isShakerAnimation(track)
+
+	if not track then
+		return false
+	end
+
+	local animation =
+		track.Animation
+
+	if not animation then
+		return false
+	end
+
+	return animation.AnimationId ==
+		MIX_ANIMATION_ID
+
+end
+
+--==================================================
+-- CLEAR SHAKER STATE
+--==================================================
+
+local function clearShakerTrack(track)
+
+	shakerTracks[track] =
+		nil
+
+	local anotherTrack =
+		false
+
+	for activeTrack in pairs(
+		shakerTracks
+	) do
+
+		if activeTrack
+			and activeTrack.IsPlaying then
+
+			anotherTrack =
+				true
+
+			break
+
+		end
+
+	end
+
+	if not anotherTrack then
+
+		shakerAnimationPlaying =
+			false
+
+		print(
+			"[Poke Haven Mix Hub] Shaker animation FINISHED."
+		)
+
+	end
+
+end
+
+--==================================================
+-- WATCHER
+--==================================================
+
+local function setupAnimationWatcher(character)
+
+	local humanoid =
+		character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if not humanoid then
+
+		humanoid =
+			character:WaitForChild(
+				"Humanoid"
+			)
+
+	end
+
+	table.clear(
+		shakerTracks
+	)
+
+	shakerAnimationPlaying =
+		false
+
+	--==================================================
+	-- NEW ANIMATIONS
+	--==================================================
+
+	humanoid.AnimationPlayed:Connect(
+		function(track)
+
+			if not isShakerAnimation(track) then
+				return
+			end
+
+			shakerAnimationPlaying =
+				true
+
+			shakerStartCounter +=
+				1
+
+			local thisStart =
+				shakerStartCounter
+
+			shakerTracks[track] =
+				true
+
+			print(
+				"[Poke Haven Mix Hub] Shaker STARTED #"
+					.. tostring(thisStart)
+			)
+
+			track.Stopped:Connect(
+				function()
+
+					clearShakerTrack(
+						track
+					)
+
+				end
+			)
+
+		end
+	)
+
+	--==================================================
+	-- ALREADY PLAYING
+	--==================================================
+
+	for _, track in ipairs(
+		humanoid:GetPlayingAnimationTracks()
+	) do
+
+		if isShakerAnimation(track) then
+
+			shakerAnimationPlaying =
+				true
+
+			shakerTracks[track] =
+				true
+
+			print(
+				"[Poke Haven Mix Hub] Existing shaker animation detected."
+			)
+
+			track.Stopped:Connect(
+				function()
+
+					clearShakerTrack(
+						track
+					)
+
+				end
+			)
+
+		end
+
+	end
+
+end
+
+--==================================================
+-- CHARACTER
+--==================================================
+
+if Player.Character then
+
+	task.spawn(
+		setupAnimationWatcher,
+		Player.Character
+	)
+
+end
+
+Player.CharacterAdded:Connect(
+	function(character)
+
+		shakerAnimationPlaying =
+			false
+
+		table.clear(
+			shakerTracks
+		)
+
+		task.spawn(
+			setupAnimationWatcher,
+			character
+		)
+
+	end
+)
+
+--==================================================
+-- WAIT FOR SHAKER
+--==================================================
+
+local function waitForShakerIfActive()
+
+	while shakerAnimationPlaying do
+
+		task.wait()
+
+	end
+
+end
+
+--==================================================
+-- RECIPE LIBRARY
 --==================================================
 
 local RecipeLib
 
-local success, result = pcall(function()
-	return require(
-		ReplicatedStorage
-			:WaitForChild("Modules")
-			:WaitForChild("Classes")
-			:WaitForChild("DrinkClass")
-			:WaitForChild("RecipeLib")
-	)
-end)
+local success, result =
+	pcall(
+		function()
 
-if success then
-	RecipeLib = result
-else
-	warn("[Poke Haven Mix Hub] Failed to load DrinkClass.RecipeLib:", result)
+			return require(
+				ReplicatedStorage
+					:WaitForChild("Modules")
+					:WaitForChild("Classes")
+					:WaitForChild("DrinkClass")
+					:WaitForChild("RecipeLib")
+			)
+
+		end
+	)
+
+if not success then
+
+	warn(
+		"[Poke Haven Mix Hub] Failed to load RecipeLib:",
+		result
+	)
+
 	return
+
 end
 
-local Recipes = {}
+RecipeLib =
+	result
+
+local Recipes =
+	{}
 
 --==================================================
--- LOAD ACTUAL RECIPES
+-- LOAD RECIPES
 --==================================================
 
-local function loadRecipeCategory(categoryName, glassName)
-	local category = RecipeLib.Recipes and RecipeLib.Recipes[categoryName]
+local function loadRecipeCategory(
+	categoryName,
+	glassName
+)
+
+	local category =
+		RecipeLib.Recipes
+		and RecipeLib.Recipes[categoryName]
 
 	if not category then
+
 		warn(
-			"[Poke Haven Mix Hub] Recipe category not found:",
+			"[Poke Haven Mix Hub] Category not found:",
 			categoryName
 		)
+
 		return
+
 	end
 
-	for recipeName, ingredients in pairs(category) do
-		if type(ingredients) == "table" then
-			Recipes[recipeName] = {
-				Ingredients = ingredients,
-				Glass = glassName
-			}
+	for recipeName, ingredients in pairs(
+		category
+	) do
+
+		if type(recipeName) == "string"
+			and type(ingredients) == "table" then
+
+			table.insert(
+				Recipes,
+				{
+					Name = recipeName,
+					Ingredients = ingredients,
+					Glass = glassName
+				}
+			)
+
 		end
+
 	end
+
 end
 
--- These are the categories used by the game's NoteBookUI.
-loadRecipeCategory("Cup", "Cup")
-loadRecipeCategory("Margarita", "Margarita")
+loadRecipeCategory(
+	"Cup",
+	"Cup"
+)
+
+loadRecipeCategory(
+	"Margarita",
+	"Margarita"
+)
 
 print(
 	"[Poke Haven Mix Hub] Loaded",
-	tostring((function()
-		local count = 0
-
-		for _ in pairs(Recipes) do
-			count += 1
-		end
-
-		return count
-	end)()),
-	"actual game recipes."
+	#Recipes,
+	"recipes."
 )
 
 --==================================================
 -- REMOVE OLD GUI
 --==================================================
 
-local old = PlayerGui:FindFirstChild("PokeHavenMixHub")
+local old =
+	PlayerGui:FindFirstChild(
+		"PokeHavenMixHub"
+	)
 
 if old then
 	old:Destroy()
 end
 
 --==================================================
--- ALIASES
+-- SELECTED INSTANCES
 --==================================================
 
-local aliases = {
-	["bechrovka"] = "becherovka",
-	["becherovka"] = "becherovka",
-
-	["curacao"] = "curacoas",
-	["curacaos"] = "curacoas",
-	["curacoas"] = "curacoas",
-
-	["icetea"] = "icedtea",
-	["icedtea"] = "icedtea",
-
-	["coke"] = "cola",
-	["cola"] = "cola",
-
-	["maktell"] = "martel",
-	["martel"] = "martel",
-
-	["paranoid"] = "pernoid",
-	["pernoid"] = "pernoid",
-
-	["bailey"] = "baileys",
-	["baileys"] = "baileys",
-
-	["jäegermeister"] = "jaegermeister",
-	["jaegermeister"] = "jaegermeister",
-
-	["ramzotte"] = "ramazzotti",
-	["ramazotti"] = "ramazzotti",
-	["ramazzotti"] = "ramazzotti",
-}
-
---==================================================
--- NORMALIZATION
---==================================================
-
-local function normalizeName(name)
-
-	name = tostring(name):lower()
-
-	name = name:gsub("ä", "a")
-	name = name:gsub("á", "a")
-	name = name:gsub("à", "a")
-	name = name:gsub("â", "a")
-
-	name = name:gsub("é", "e")
-	name = name:gsub("è", "e")
-	name = name:gsub("ê", "e")
-
-	name = name:gsub("í", "i")
-	name = name:gsub("ì", "i")
-
-	name = name:gsub("ó", "o")
-	name = name:gsub("ò", "o")
-
-	name = name:gsub("ú", "u")
-	name = name:gsub("ù", "u")
-
-	name = name:gsub("ñ", "n")
-
-	name = name:gsub("&", "and")
-
-	name = name:gsub("[^%w]", "")
-
-	return name
-end
-
-local function normalizeIngredient(name)
-
-	local normalized = normalizeName(name)
-
-	if aliases[normalized] then
-		normalized = aliases[normalized]
-	end
-
-	return normalized
-end
+local selectedInstances =
+	{}
 
 --==================================================
 -- BOTTLE CACHE
 --==================================================
 
-local BottleCache = {}
-local BottleNormalizedNames = {}
+local BottleCache =
+	{}
 
 local function rebuildBottleCache()
 
-	table.clear(BottleCache)
-	table.clear(BottleNormalizedNames)
+	table.clear(
+		BottleCache
+	)
 
-	for _, obj in ipairs(Bottles:GetDescendants()) do
+	for _, obj in ipairs(
+		Bottles:GetDescendants()
+	) do
 
 		if obj:IsA("Model")
 			or obj:IsA("BasePart")
 			or obj:IsA("Tool")
 			or obj:IsA("Folder") then
 
-			table.insert(BottleCache, obj)
-
-			BottleNormalizedNames[obj] =
-				normalizeIngredient(obj.Name)
+			table.insert(
+				BottleCache,
+				obj
+			)
 
 		end
 
@@ -217,632 +456,2054 @@ end
 rebuildBottleCache()
 
 --==================================================
--- BOTTLE CACHE UPDATES
+-- CACHE UPDATES
 --==================================================
 
-Bottles.DescendantAdded:Connect(function(obj)
+Bottles.DescendantAdded:Connect(
+	function(obj)
 
-	task.defer(function()
+		task.defer(
+			function()
 
-		if not obj.Parent then
-			return
-		end
+				if not obj.Parent then
+					return
+				end
 
-		if obj:IsA("Model")
-			or obj:IsA("BasePart")
-			or obj:IsA("Tool")
-			or obj:IsA("Folder") then
+				if obj:IsA("Model")
+					or obj:IsA("BasePart")
+					or obj:IsA("Tool")
+					or obj:IsA("Folder") then
 
-			table.insert(BottleCache, obj)
+					for _, existing in ipairs(
+						BottleCache
+					) do
 
-			BottleNormalizedNames[obj] =
-				normalizeIngredient(obj.Name)
+						if existing == obj then
+							return
+						end
 
-		end
-
-	end)
-
-end)
-
-Bottles.DescendantRemoving:Connect(function(obj)
-
-	BottleNormalizedNames[obj] = nil
-
-	for i = #BottleCache, 1, -1 do
-
-		if BottleCache[i] == obj then
-			table.remove(BottleCache, i)
-			break
-		end
-
-	end
-
-end)
-
---==================================================
--- LEVENSHTEIN
---==================================================
-
-local function levenshtein(a, b)
-
-	local lenA = #a
-	local lenB = #b
-
-	if lenA == 0 then
-		return lenB
-	end
-
-	if lenB == 0 then
-		return lenA
-	end
-
-	local previous = {}
-
-	for j = 0, lenB do
-		previous[j] = j
-	end
-
-	for i = 1, lenA do
-
-		local current = {}
-		current[0] = i
-
-		for j = 1, lenB do
-
-			local cost =
-				a:sub(i, i) == b:sub(j, j)
-				and 0
-				or 1
-
-			current[j] = math.min(
-				current[j - 1] + 1,
-				previous[j] + 1,
-				previous[j - 1] + cost
-			)
-
-		end
-
-		previous = current
-
-	end
-
-	return previous[lenB]
-end
-
-local function similarity(a, b)
-
-	if a == b then
-		return 1
-	end
-
-	if a == "" or b == "" then
-		return 0
-	end
-
-	if a:find(b, 1, true)
-		or b:find(a, 1, true) then
-
-		local shorter = math.min(#a, #b)
-		local longer = math.max(#a, #b)
-
-		return 0.90 + ((shorter / longer) * 0.10)
-	end
-
-	local distance = levenshtein(a, b)
-	local longest = math.max(#a, #b)
-
-	return 1 - distance / longest
-end
-
---==================================================
--- SELECTED INSTANCES
---==================================================
-
-local selectedInstances = {}
-
---==================================================
--- FIND BOTTLE
---==================================================
-
-local function findIngredient(ingredientName)
-
-	local wanted = normalizeIngredient(ingredientName)
-
-	-- EXACT
-	for _, obj in ipairs(BottleCache) do
-
-		if obj and obj.Parent then
-
-			local actual =
-				BottleNormalizedNames[obj]
-
-			if actual == wanted then
-
-				print(
-					"[Poke Haven Mix Hub] Exact:",
-					ingredientName,
-					"->",
-					obj.Name
-				)
-
-				selectedInstances[obj:GetFullName()] = obj
-
-				return obj
-			end
-		end
-	end
-
-	-- CONTAINS
-	for _, obj in ipairs(BottleCache) do
-
-		if obj and obj.Parent then
-
-			local actual =
-				BottleNormalizedNames[obj]
-
-			if actual
-				and (
-					actual:find(wanted, 1, true)
-					or wanted:find(actual, 1, true)
-				) then
-
-				print(
-					"[Poke Haven Mix Hub] Similar:",
-					ingredientName,
-					"->",
-					obj.Name
-				)
-
-				selectedInstances[obj:GetFullName()] = obj
-
-				return obj
-			end
-		end
-	end
-
-	-- FUZZY
-	local bestObject = nil
-	local bestScore = 0
-
-	for _, obj in ipairs(BottleCache) do
-
-		if obj and obj.Parent then
-
-			local actual =
-				BottleNormalizedNames[obj]
-
-			if actual then
-
-				local score =
-					similarity(wanted, actual)
-
-				if #wanted >= 3
-					and #actual >= 3 then
-
-					local wantedPrefix =
-						wanted:sub(
-							1,
-							math.min(4, #wanted)
-						)
-
-					local actualPrefix =
-						actual:sub(
-							1,
-							math.min(4, #actual)
-						)
-
-					if wantedPrefix == actualPrefix then
-						score += 0.08
 					end
+
+					table.insert(
+						BottleCache,
+						obj
+					)
+
 				end
 
-				if score > bestScore then
-					bestScore = score
-					bestObject = obj
-				end
 			end
-		end
-	end
-
-	if bestObject
-		and bestScore >= 0.62 then
-
-		print(
-			"[Poke Haven Mix Hub] Fuzzy:",
-			ingredientName,
-			"->",
-			bestObject.Name,
-			math.floor(bestScore * 100) .. "%"
 		)
 
-		selectedInstances[bestObject:GetFullName()] =
-			bestObject
+	end
+)
 
-		return bestObject
+Bottles.DescendantRemoving:Connect(
+	function(obj)
+
+		for i = #BottleCache, 1, -1 do
+
+			if BottleCache[i] == obj then
+
+				table.remove(
+					BottleCache,
+					i
+				)
+
+				break
+
+			end
+
+		end
+
+	end
+)
+
+--==================================================
+-- EXACT INGREDIENT FINDER
+--==================================================
+
+local function findIngredientExact(
+	ingredientName
+)
+
+	ingredientName =
+		tostring(
+			ingredientName
+		)
+
+	for _, obj in ipairs(
+		BottleCache
+	) do
+
+		if obj
+			and obj.Parent
+			and obj.Name == ingredientName then
+
+			selectedInstances[
+				obj:GetFullName()
+			] = obj
+
+			print(
+				"[Poke Haven Mix Hub] EXACT:",
+				ingredientName,
+				"->",
+				obj:GetFullName()
+			)
+
+			return obj
+
+		end
+
 	end
 
 	warn(
-		"[Poke Haven Mix Hub] Missing ingredient:",
+		"[Poke Haven Mix Hub] Ingredient not found:",
 		ingredientName
 	)
 
 	return nil
+
+end
+
+--==================================================
+-- CHARACTER ROOT
+--==================================================
+
+local function getRoot()
+
+	local character =
+		Player.Character
+
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChild(
+		"HumanoidRootPart"
+	)
+
+end
+
+local function getHumanoid()
+
+	local character =
+		Player.Character
+
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChildOfClass(
+		"Humanoid"
+	)
+
+end
+
+--==================================================
+-- MODEL POSITION
+--==================================================
+
+local function getObjectPosition(obj)
+
+	if not obj
+		or not obj.Parent then
+
+		return nil
+
+	end
+
+	if obj:IsA("BasePart") then
+
+		return obj.Position
+
+	end
+
+	if obj:IsA("Model") then
+
+		local primary =
+			obj.PrimaryPart
+
+		if primary then
+			return primary.Position
+		end
+
+		local part =
+			obj:FindFirstChildWhichIsA(
+				"BasePart",
+				true
+			)
+
+		if part then
+			return part.Position
+		end
+
+	end
+
+	if obj:IsA("Tool") then
+
+		local handle =
+			obj:FindFirstChild(
+				"Handle"
+			)
+
+		if handle
+			and handle:IsA("BasePart") then
+
+			return handle.Position
+
+		end
+
+		local part =
+			obj:FindFirstChildWhichIsA(
+				"BasePart",
+				true
+			)
+
+		if part then
+			return part.Position
+		end
+
+	end
+
+	return nil
+
+end
+
+--==================================================
+-- NEARBY INGREDIENT MODEL SEARCH
+--==================================================
+-- Searches ONLY workspace.GameAssets.Interactables.Bottles
+-- and only its direct Model children.
+--
+-- This is much lighter than workspace:GetDescendants()
+-- because it never scans the whole game.
+--
+-- Picks the nearest matching Model within
+-- INGREDIENT_SCAN_RADIUS studs of the player.
+
+local function findNearbyIngredient(
+	ingredientName
+)
+
+	local root =
+		getRoot()
+
+	if not root then
+		return nil
+	end
+
+	local wanted =
+		tostring(
+			ingredientName
+		)
+
+	local best =
+		nil
+
+	local bestDistance =
+		INGREDIENT_SCAN_RADIUS
+
+	for _, model in ipairs(
+		Bottles:GetChildren()
+	) do
+
+		if model:IsA("Model")
+			and model.Name == wanted then
+
+			local position =
+				getObjectPosition(
+					model
+				)
+
+			if position then
+
+				local distance =
+					(
+						root.Position
+						- position
+					).Magnitude
+
+				if distance <=
+					bestDistance then
+
+					bestDistance =
+						distance
+
+					best =
+						model
+
+				end
+
+			end
+
+		end
+
+	end
+
+	if best then
+
+		print(
+			"[Poke Haven Mix Hub] Nearby ingredient found:",
+			wanted,
+			"distance:",
+			bestDistance
+		)
+
+	end
+
+	return best
+
+end
+
+--==================================================
+-- WALK TO INGREDIENT
+--==================================================
+
+local function walkToIngredient(
+	ingredient
+)
+
+	if not walkToIngredients then
+		return true
+	end
+
+	if not ingredient
+		or not ingredient.Parent then
+
+		return false
+
+	end
+
+	local humanoid =
+		getHumanoid()
+
+	local root =
+		getRoot()
+
+	if not humanoid
+		or not root then
+
+		return false
+
+	end
+
+	local startTime =
+		os.clock()
+
+	print(
+		"[Poke Haven Mix Hub] Walking to:",
+		ingredient.Name
+	)
+
+	while walkToIngredients
+		and ingredient
+		and ingredient.Parent do
+
+		root =
+			getRoot()
+
+		humanoid =
+			getHumanoid()
+
+		if not root
+			or not humanoid then
+
+			return false
+
+		end
+
+		local position =
+			getObjectPosition(
+				ingredient
+			)
+
+		if not position then
+
+			return false
+
+		end
+
+		local distance =
+			(
+				root.Position
+				- position
+			).Magnitude
+
+		--==================================================
+		-- 5 STUD STOP DISTANCE
+		--==================================================
+
+		if distance <=
+			STOP_DISTANCE then
+
+			humanoid:Move(
+				Vector3.zero
+			)
+
+			print(
+				"[Poke Haven Mix Hub] Reached",
+				ingredient.Name,
+				"within",
+				STOP_DISTANCE,
+				"studs."
+			)
+
+			return true
+
+		end
+
+		--==================================================
+		-- KEEP WALKING
+		--==================================================
+
+		humanoid:MoveTo(
+			position
+		)
+
+		-- Don't use a giant wait here.
+		-- Keep checking the distance while walking.
+
+		task.wait(
+			0.1
+		)
+
+		-- Safety only for getting stuck while walking.
+		if os.clock() - startTime >
+			WALK_TIMEOUT then
+
+			warn(
+				"[Poke Haven Mix Hub] Walk timeout:",
+				ingredient.Name
+			)
+
+			humanoid:Move(
+				Vector3.zero
+			)
+
+			return false
+
+		end
+
+	end
+
+	if humanoid then
+
+		humanoid:Move(
+			Vector3.zero
+		)
+
+	end
+
+	return false
+
+end
+
+--==================================================
+-- MIX ONE INGREDIENT
+--==================================================
+-- Returns:
+-- true  = successfully handled
+-- false = failed
+
+local function mixIngredient(
+	ingredientName
+)
+
+	--==================================================
+	-- FIND INGREDIENT
+	--==================================================
+
+	local ingredient
+
+	if walkToIngredients then
+
+		ingredient =
+			findNearbyIngredient(
+				ingredientName
+			)
+
+	else
+
+		ingredient =
+			findIngredientExact(
+				ingredientName
+			)
+
+	end
+
+	if not ingredient
+		or not ingredient.Parent then
+
+		warn(
+			"[Poke Haven Mix Hub] Could not find:",
+			ingredientName
+		)
+
+		return false
+
+	end
+
+	--==================================================
+	-- WALK
+	--==================================================
+
+	if walkToIngredients then
+
+		local reached =
+			walkToIngredient(
+				ingredient
+			)
+
+		if not reached then
+
+			warn(
+				"[Poke Haven Mix Hub] Could not reach:",
+				ingredientName
+			)
+
+			return false
+
+		end
+
+	end
+
+	--==================================================
+	-- WAIT IF SHAKER WAS ALREADY ACTIVE
+	--==================================================
+
+	waitForShakerIfActive()
+
+	--==================================================
+	-- RECORD SHAKER COUNTER
+	--==================================================
+
+	local shakerCounterBefore =
+		shakerStartCounter
+
+	--==================================================
+	-- MIX
+	--==================================================
+
+	if ingredient
+		and ingredient.Parent then
+
+		print(
+			"[Poke Haven Mix Hub] MIXING:",
+			ingredientName
+		)
+
+		Event:FireServer(
+			"Mix",
+			ingredient,
+			2
+		)
+
+	else
+
+		return false
+
+	end
+
+	--==================================================
+	-- IMPORTANT
+	--==================================================
+	--
+	-- Give the game a chance to process the
+	-- animation/event without waiting for it to
+	-- start indefinitely.
+	--
+	-- The normal 2 second ingredient delay happens
+	-- below.
+	--
+	-- If the shaker starts during this period,
+	-- shakerStartCounter changes and we catch it.
+
+	task.wait(
+		BETWEEN_INGREDIENT_DELAY
+	)
+
+	--==================================================
+	-- SHAKER STARTED AFTER MIX
+	--==================================================
+	--
+	-- If the animation started after we sent the
+	-- ingredient, wait for it to finish and retry
+	-- the SAME ingredient.
+	--
+	-- This fixes cases like White Russian where
+	-- the third ingredient can occasionally get
+	-- skipped because the shaker starts late.
+
+	if shakerStartCounter >
+		shakerCounterBefore then
+
+		print(
+			"[Poke Haven Mix Hub] Shaker started AFTER",
+			ingredientName,
+			"was mixed."
+		)
+
+		print(
+			"[Poke Haven Mix Hub] Waiting for shaker to finish..."
+		)
+
+		waitForShakerIfActive()
+
+		--==================================================
+		-- REFIND INGREDIENT
+		--==================================================
+		--
+		-- The original object may have changed/moved
+		-- while the shaker was running, so find it again.
+
+		if walkToIngredients then
+
+			ingredient =
+				findNearbyIngredient(
+					ingredientName
+				)
+
+		else
+
+			ingredient =
+				findIngredientExact(
+					ingredientName
+				)
+
+		end
+
+		if not ingredient
+			or not ingredient.Parent then
+
+			warn(
+				"[Poke Haven Mix Hub] Could not refind ingredient for retry:",
+				ingredientName
+			)
+
+			return false
+
+		end
+
+		--==================================================
+		-- WALK AGAIN IF ENABLED
+		--==================================================
+
+		if walkToIngredients then
+
+			local reached =
+				walkToIngredient(
+					ingredient
+				)
+
+			if not reached then
+
+				return false
+
+			end
+
+		end
+
+		--==================================================
+		-- RETRY SAME INGREDIENT
+		--==================================================
+
+		waitForShakerIfActive()
+
+		print(
+			"[Poke Haven Mix Hub] RETRYING:",
+			ingredientName
+		)
+
+		Event:FireServer(
+			"Mix",
+			ingredient,
+			2
+		)
+
+		-- Give the retry the normal 2 second gap too.
+		task.wait(
+			BETWEEN_INGREDIENT_DELAY
+		)
+
+		-- If another shaker started during retry,
+		-- wait for it before allowing the recipe
+		-- to progress.
+
+		waitForShakerIfActive()
+
+	end
+
+	return true
+
 end
 
 --==================================================
 -- GUI
 --==================================================
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "PokeHavenMixHub"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
-ScreenGui.Parent = PlayerGui
+local ScreenGui =
+	Instance.new("ScreenGui")
+
+ScreenGui.Name =
+	"PokeHavenMixHub"
+
+ScreenGui.ResetOnSpawn =
+	false
+
+ScreenGui.ZIndexBehavior =
+	Enum.ZIndexBehavior.Global
+
+ScreenGui.Parent =
+	PlayerGui
 
 --==================================================
 -- MAIN
 --==================================================
 
-local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 240, 0, 300)
-Main.Position = UDim2.new(0.5, -120, 0.5, -150)
-Main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-Main.BorderSizePixel = 0
-Main.Parent = ScreenGui
+local Main =
+	Instance.new("Frame")
 
-Instance.new("UICorner", Main).CornerRadius =
-	UDim.new(0, 10)
+Main.Size =
+	UDim2.new(
+		0,
+		240,
+		0,
+		300
+	)
+
+Main.Position =
+	UDim2.new(
+		0.5,
+		-120,
+		0.5,
+		-150
+	)
+
+Main.BackgroundColor3 =
+	Color3.fromRGB(
+		20,
+		20,
+		20
+	)
+
+Main.BorderSizePixel =
+	0
+
+Main.Parent =
+	ScreenGui
+
+Instance.new(
+	"UICorner",
+	Main
+).CornerRadius =
+	UDim.new(
+		0,
+		10
+	)
 
 --==================================================
 -- TITLE
 --==================================================
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -145, 0, 35)
-Title.Position = UDim2.new(0, 10, 0, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "Poke Haven Mix"
-Title.TextColor3 = Color3.new(1, 1, 1)
-Title.TextSize = 15
-Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = Main
+local Title =
+	Instance.new("TextLabel")
+
+Title.Size =
+	UDim2.new(
+		1,
+		-145,
+		0,
+		35
+	)
+
+Title.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		0
+	)
+
+Title.BackgroundTransparency =
+	1
+
+Title.Text =
+	"Poke Haven Mix"
+
+Title.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Title.TextSize =
+	15
+
+Title.Font =
+	Enum.Font.GothamBold
+
+Title.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+Title.Parent =
+	Main
 
 --==================================================
 -- DRAG
 --==================================================
 
-local dragging = false
+local dragging =
+	false
+
 local dragStart
+
 local startPos
 
-Title.InputBegan:Connect(function(input)
+Title.InputBegan:Connect(
+	function(input)
 
-	if input.UserInputType == Enum.UserInputType.MouseButton1
-		or input.UserInputType == Enum.UserInputType.Touch then
+		if input.UserInputType ==
+			Enum.UserInputType.MouseButton1
+			or input.UserInputType ==
+			Enum.UserInputType.Touch then
 
-		dragging = true
-		dragStart = input.Position
-		startPos = Main.Position
+			dragging =
+				true
 
-		input.Changed:Connect(function()
+			dragStart =
+				input.Position
 
-			if input.UserInputState ==
-				Enum.UserInputState.End then
+			startPos =
+				Main.Position
 
-				dragging = false
+			input.Changed:Connect(
+				function()
 
-			end
+					if input.UserInputState ==
+						Enum.UserInputState.End then
 
-		end)
+						dragging =
+							false
 
-	end
+					end
 
-end)
+				end
+			)
 
-UserInputService.InputChanged:Connect(function(input)
-
-	if not dragging then
-		return
-	end
-
-	if input.UserInputType == Enum.UserInputType.MouseMovement
-		or input.UserInputType == Enum.UserInputType.Touch then
-
-		local delta =
-			input.Position - dragStart
-
-		Main.Position = UDim2.new(
-			startPos.X.Scale,
-			startPos.X.Offset + delta.X,
-			startPos.Y.Scale,
-			startPos.Y.Offset + delta.Y
-		)
+		end
 
 	end
+)
 
-end)
+UserInputService.InputChanged:Connect(
+	function(input)
+
+		if not dragging then
+			return
+		end
+
+		if input.UserInputType ==
+			Enum.UserInputType.MouseMovement
+			or input.UserInputType ==
+			Enum.UserInputType.Touch then
+
+			local delta =
+				input.Position - dragStart
+
+			Main.Position =
+				UDim2.new(
+					startPos.X.Scale,
+					startPos.X.Offset + delta.X,
+					startPos.Y.Scale,
+					startPos.Y.Offset + delta.Y
+				)
+
+		end
+
+	end
+)
 
 --==================================================
 -- MINIMIZE
 --==================================================
 
-local Minimize = Instance.new("TextButton")
-Minimize.Size = UDim2.new(0, 28, 0, 28)
-Minimize.Position = UDim2.new(1, -64, 0, 4)
-Minimize.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-Minimize.Text = "-"
-Minimize.TextColor3 = Color3.new(1, 1, 1)
-Minimize.TextSize = 18
-Minimize.Font = Enum.Font.GothamBold
-Minimize.Parent = Main
+local Minimize =
+	Instance.new("TextButton")
 
-Instance.new("UICorner", Minimize).CornerRadius =
-	UDim.new(0, 7)
+Minimize.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+Minimize.Position =
+	UDim2.new(
+		1,
+		-64,
+		0,
+		4
+	)
+
+Minimize.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		35,
+		35
+	)
+
+Minimize.Text =
+	"-"
+
+Minimize.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Minimize.TextSize =
+	18
+
+Minimize.Font =
+	Enum.Font.GothamBold
+
+Minimize.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	Minimize
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
 
 --==================================================
 -- GEAR
 --==================================================
 
-local Gear = Instance.new("TextButton")
-Gear.Size = UDim2.new(0, 28, 0, 28)
-Gear.Position = UDim2.new(1, -98, 0, 4)
-Gear.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-Gear.Text = "⚙"
-Gear.TextColor3 = Color3.new(1, 1, 1)
-Gear.TextSize = 17
-Gear.Font = Enum.Font.GothamBold
-Gear.Parent = Main
+local Gear =
+	Instance.new("TextButton")
 
-Instance.new("UICorner", Gear).CornerRadius =
-	UDim.new(0, 7)
+Gear.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+Gear.Position =
+	UDim2.new(
+		1,
+		-98,
+		0,
+		4
+	)
+
+Gear.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		35,
+		35
+	)
+
+Gear.Text =
+	"⚙"
+
+Gear.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Gear.TextSize =
+	17
+
+Gear.Font =
+	Enum.Font.GothamBold
+
+Gear.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	 Gear
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
 
 --==================================================
 -- BOOK
 --==================================================
 
-local Book = Instance.new("TextButton")
-Book.Size = UDim2.new(0, 28, 0, 28)
-Book.Position = UDim2.new(1, -132, 0, 4)
-Book.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-Book.Text = "📖"
-Book.TextColor3 = Color3.new(1, 1, 1)
-Book.TextSize = 16
-Book.Font = Enum.Font.GothamBold
-Book.Parent = Main
+local Book =
+	Instance.new("TextButton")
 
-Instance.new("UICorner", Book).CornerRadius =
-	UDim.new(0, 7)
+Book.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+Book.Position =
+	UDim2.new(
+		1,
+		-132,
+		0,
+		4
+	)
+
+Book.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		35,
+		35
+	)
+
+Book.Text =
+	"📖"
+
+Book.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Book.TextSize =
+	16
+
+Book.Font =
+	Enum.Font.GothamBold
+
+Book.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	Book
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- CANDY BUTTON
+--==================================================
+
+local Candy =
+	Instance.new("TextButton")
+
+Candy.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+Candy.Position =
+	UDim2.new(
+		1,
+		-166,
+		0,
+		4
+	)
+
+Candy.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		35,
+		35
+	)
+
+Candy.Text =
+	"🍬"
+
+Candy.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+Candy.TextSize =
+	16
+
+Candy.Font =
+	Enum.Font.GothamBold
+
+Candy.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	Candy
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- WALK TOGGLE
+--==================================================
+
+local WalkToggle =
+	Instance.new("TextButton")
+
+WalkToggle.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+WalkToggle.Position =
+	UDim2.new(
+		1,
+		-200,
+		0,
+		4
+	)
+
+WalkToggle.BackgroundColor3 =
+	Color3.fromRGB(
+		35,
+		35,
+		35
+	)
+
+WalkToggle.Text =
+	"W"
+
+WalkToggle.TextColor3 =
+	Color3.fromRGB(
+		170,
+		170,
+		170
+	)
+
+WalkToggle.TextSize =
+	12
+
+WalkToggle.Font =
+	Enum.Font.GothamBold
+
+WalkToggle.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	WalkToggle
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+--==================================================
+-- WALK TOGGLE UPDATE
+--==================================================
+
+local function updateWalkToggle()
+
+	if walkToIngredients then
+
+		WalkToggle.BackgroundColor3 =
+			Color3.fromRGB(
+				255,
+				255,
+				255
+			)
+
+		WalkToggle.TextColor3 =
+			Color3.fromRGB(
+				0,
+				0,
+				0
+			)
+
+		WalkToggle.Text =
+			"W ON"
+
+	else
+
+		WalkToggle.BackgroundColor3 =
+			Color3.fromRGB(
+				35,
+				35,
+				35
+			)
+
+		WalkToggle.TextColor3 =
+			Color3.fromRGB(
+				170,
+				170,
+				170
+			)
+
+		WalkToggle.Text =
+			"W"
+
+	end
+
+end
+
+WalkToggle.MouseButton1Click:Connect(
+	function()
+
+		walkToIngredients =
+			not walkToIngredients
+
+		updateWalkToggle()
+
+		print(
+			"[Poke Haven Mix Hub] Walk to ingredients:",
+			walkToIngredients
+		)
+
+	end
+)
+
+updateWalkToggle()
 
 --==================================================
 -- SEARCH
 --==================================================
 
-local SearchBox = Instance.new("TextBox")
-SearchBox.Size = UDim2.new(1, -80, 0, 30)
-SearchBox.Position = UDim2.new(0, 10, 0, 42)
-SearchBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-SearchBox.PlaceholderText = "Search..."
-SearchBox.Text = ""
-SearchBox.TextColor3 = Color3.new(1, 1, 1)
+local SearchBox =
+	Instance.new("TextBox")
+
+SearchBox.Size =
+	UDim2.new(
+		1,
+		-80,
+		0,
+		30
+	)
+
+SearchBox.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		42
+	)
+
+SearchBox.BackgroundColor3 =
+	Color3.fromRGB(
+		30,
+		30,
+		30
+	)
+
+SearchBox.PlaceholderText =
+	"Search..."
+
+SearchBox.Text =
+	""
+
+SearchBox.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
 SearchBox.PlaceholderColor3 =
-	Color3.fromRGB(150, 150, 150)
-SearchBox.TextSize = 13
-SearchBox.Font = Enum.Font.Gotham
-SearchBox.ClearTextOnFocus = false
-SearchBox.Parent = Main
+	Color3.fromRGB(
+		150,
+		150,
+		150
+	)
 
-Instance.new("UICorner", SearchBox).CornerRadius =
-	UDim.new(0, 7)
+SearchBox.TextSize =
+	13
 
-local SearchButton = Instance.new("TextButton")
-SearchButton.Size = UDim2.new(0, 60, 0, 30)
-SearchButton.Position = UDim2.new(1, -70, 0, 42)
-SearchButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-SearchButton.Text = "Search"
-SearchButton.TextColor3 = Color3.new(1, 1, 1)
-SearchButton.TextSize = 11
-SearchButton.Font = Enum.Font.GothamBold
-SearchButton.Parent = Main
+SearchBox.Font =
+	Enum.Font.Gotham
 
-Instance.new("UICorner", SearchButton).CornerRadius =
-	UDim.new(0, 7)
+SearchBox.ClearTextOnFocus =
+	false
+
+SearchBox.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	SearchBox
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local SearchButton =
+	Instance.new("TextButton")
+
+SearchButton.Size =
+	UDim2.new(
+		0,
+		60,
+		0,
+		30
+	)
+
+SearchButton.Position =
+	UDim2.new(
+		1,
+		-70,
+		0,
+		42
+	)
+
+SearchButton.BackgroundColor3 =
+	Color3.fromRGB(
+		40,
+		40,
+		40
+	)
+
+SearchButton.Text =
+	"Search"
+
+SearchButton.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+SearchButton.TextSize =
+	11
+
+SearchButton.Font =
+	Enum.Font.GothamBold
+
+SearchButton.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	SearchButton
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
 
 --==================================================
 -- MAIN LIST
 --==================================================
 
-local List = Instance.new("ScrollingFrame")
-List.Size = UDim2.new(1, -20, 1, -82)
-List.Position = UDim2.new(0, 10, 0, 78)
-List.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-List.BorderSizePixel = 0
-List.ScrollBarThickness = 4
-List.Parent = Main
+local List =
+	Instance.new("ScrollingFrame")
 
-Instance.new("UICorner", List).CornerRadius =
-	UDim.new(0, 7)
+List.Size =
+	UDim2.new(
+		1,
+		-20,
+		1,
+		-82
+	)
 
-local ListLayout = Instance.new("UIListLayout")
-ListLayout.Padding = UDim.new(0, 5)
-ListLayout.Parent = List
+List.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		78
+	)
+
+List.BackgroundColor3 =
+	Color3.fromRGB(
+		15,
+		15,
+		15
+	)
+
+List.BorderSizePixel =
+	0
+
+List.ScrollBarThickness =
+	4
+
+List.Parent =
+	Main
+
+Instance.new(
+	"UICorner",
+	List
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local ListLayout =
+	Instance.new("UIListLayout")
+
+ListLayout.Padding =
+	UDim.new(
+		0,
+		5
+	)
+
+ListLayout.Parent =
+	List
 
 --==================================================
 -- GLOBAL SEARCH WINDOW
 --==================================================
 
-local GlobalFrame = Instance.new("Frame")
-GlobalFrame.Size = UDim2.new(0, 300, 0, 360)
-GlobalFrame.Position = UDim2.new(0.5, -150, 0.5, -180)
-GlobalFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-GlobalFrame.BorderSizePixel = 0
-GlobalFrame.Visible = false
-GlobalFrame.ZIndex = 20
-GlobalFrame.Parent = ScreenGui
+local GlobalFrame =
+	Instance.new("Frame")
 
-Instance.new("UICorner", GlobalFrame).CornerRadius =
-	UDim.new(0, 10)
+GlobalFrame.Size =
+	UDim2.new(
+		0,
+		300,
+		0,
+		360
+	)
 
-local GlobalTitle = Instance.new("TextLabel")
-GlobalTitle.Size = UDim2.new(1, -45, 0, 35)
-GlobalTitle.Position = UDim2.new(0, 10, 0, 0)
-GlobalTitle.BackgroundTransparency = 1
-GlobalTitle.Text = "Global Instance Search"
-GlobalTitle.TextColor3 = Color3.new(1, 1, 1)
-GlobalTitle.TextSize = 14
-GlobalTitle.Font = Enum.Font.GothamBold
-GlobalTitle.TextXAlignment = Enum.TextXAlignment.Left
-GlobalTitle.ZIndex = 21
-GlobalTitle.Parent = GlobalFrame
+GlobalFrame.Position =
+	UDim2.new(
+		0.5,
+		-150,
+		0.5,
+		-180
+	)
 
-local GlobalClose = Instance.new("TextButton")
-GlobalClose.Size = UDim2.new(0, 28, 0, 28)
-GlobalClose.Position = UDim2.new(1, -35, 0, 4)
-GlobalClose.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-GlobalClose.Text = "X"
-GlobalClose.TextColor3 = Color3.new(1, 1, 1)
-GlobalClose.TextSize = 12
-GlobalClose.Font = Enum.Font.GothamBold
-GlobalClose.ZIndex = 21
-GlobalClose.Parent = GlobalFrame
+GlobalFrame.BackgroundColor3 =
+	Color3.fromRGB(
+		18,
+		18,
+		18
+	)
 
-Instance.new("UICorner", GlobalClose).CornerRadius =
-	UDim.new(0, 7)
+GlobalFrame.BorderSizePixel =
+	0
 
-local GlobalBox = Instance.new("TextBox")
-GlobalBox.Size = UDim2.new(1, -80, 0, 30)
-GlobalBox.Position = UDim2.new(0, 10, 0, 42)
-GlobalBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-GlobalBox.PlaceholderText = "Search instances..."
-GlobalBox.Text = ""
-GlobalBox.TextColor3 = Color3.new(1, 1, 1)
+GlobalFrame.Visible =
+	false
+
+GlobalFrame.ZIndex =
+	20
+
+GlobalFrame.Parent =
+	ScreenGui
+
+Instance.new(
+	"UICorner",
+	GlobalFrame
+).CornerRadius =
+	UDim.new(
+		0,
+		10
+	)
+
+local GlobalTitle =
+	Instance.new("TextLabel")
+
+GlobalTitle.Size =
+	UDim2.new(
+		1,
+		-45,
+		0,
+		35
+	)
+
+GlobalTitle.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		0
+	)
+
+GlobalTitle.BackgroundTransparency =
+	1
+
+GlobalTitle.Text =
+	"Global Instance Search"
+
+GlobalTitle.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+GlobalTitle.TextSize =
+	14
+
+GlobalTitle.Font =
+	Enum.Font.GothamBold
+
+GlobalTitle.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+GlobalTitle.ZIndex =
+	21
+
+GlobalTitle.Parent =
+	GlobalFrame
+
+local GlobalClose =
+	Instance.new("TextButton")
+
+GlobalClose.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+GlobalClose.Position =
+	UDim2.new(
+		1,
+		-35,
+		0,
+		4
+	)
+
+GlobalClose.BackgroundColor3 =
+	Color3.fromRGB(
+		40,
+		40,
+		40
+	)
+
+GlobalClose.Text =
+	"X"
+
+GlobalClose.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+GlobalClose.TextSize =
+	12
+
+GlobalClose.Font =
+	Enum.Font.GothamBold
+
+GlobalClose.ZIndex =
+	21
+
+GlobalClose.Parent =
+	GlobalFrame
+
+Instance.new(
+	"UICorner",
+	GlobalClose
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local GlobalBox =
+	Instance.new("TextBox")
+
+GlobalBox.Size =
+	UDim2.new(
+		1,
+		-80,
+		0,
+		30
+	)
+
+GlobalBox.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		42
+	)
+
+GlobalBox.BackgroundColor3 =
+	Color3.fromRGB(
+		30,
+		30,
+		30
+	)
+
+GlobalBox.PlaceholderText =
+	"Search instances..."
+
+GlobalBox.Text =
+	""
+
+GlobalBox.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
 GlobalBox.PlaceholderColor3 =
-	Color3.fromRGB(150, 150, 150)
-GlobalBox.TextSize = 12
-GlobalBox.Font = Enum.Font.Gotham
-GlobalBox.ClearTextOnFocus = false
-GlobalBox.ZIndex = 21
-GlobalBox.Parent = GlobalFrame
+	Color3.fromRGB(
+		150,
+		150,
+		150
+	)
 
-Instance.new("UICorner", GlobalBox).CornerRadius =
-	UDim.new(0, 7)
+GlobalBox.TextSize =
+	12
 
-local GlobalSearch = Instance.new("TextButton")
-GlobalSearch.Size = UDim2.new(0, 60, 0, 30)
-GlobalSearch.Position = UDim2.new(1, -70, 0, 42)
-GlobalSearch.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-GlobalSearch.Text = "Search"
-GlobalSearch.TextColor3 = Color3.new(1, 1, 1)
-GlobalSearch.TextSize = 11
-GlobalSearch.Font = Enum.Font.GothamBold
-GlobalSearch.ZIndex = 21
-GlobalSearch.Parent = GlobalFrame
+GlobalBox.Font =
+	Enum.Font.Gotham
 
-Instance.new("UICorner", GlobalSearch).CornerRadius =
-	UDim.new(0, 7)
+GlobalBox.ClearTextOnFocus =
+	false
 
-local GlobalList = Instance.new("ScrollingFrame")
-GlobalList.Size = UDim2.new(1, -20, 1, -82)
-GlobalList.Position = UDim2.new(0, 10, 0, 78)
-GlobalList.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
-GlobalList.BorderSizePixel = 0
-GlobalList.ScrollBarThickness = 4
-GlobalList.ZIndex = 21
-GlobalList.Parent = GlobalFrame
+GlobalBox.ZIndex =
+	21
 
-Instance.new("UICorner", GlobalList).CornerRadius =
-	UDim.new(0, 7)
+GlobalBox.Parent =
+	GlobalFrame
 
-local GlobalLayout = Instance.new("UIListLayout")
-GlobalLayout.Padding = UDim.new(0, 5)
-GlobalLayout.Parent = GlobalList
+Instance.new(
+	"UICorner",
+	GlobalBox
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local GlobalSearch =
+	Instance.new("TextButton")
+
+GlobalSearch.Size =
+	UDim2.new(
+		0,
+		60,
+		0,
+		30
+	)
+
+GlobalSearch.Position =
+	UDim2.new(
+		1,
+		-70,
+		0,
+		42
+	)
+
+GlobalSearch.BackgroundColor3 =
+	Color3.fromRGB(
+		40,
+		40,
+		40
+	)
+
+GlobalSearch.Text =
+	"Search"
+
+GlobalSearch.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+GlobalSearch.TextSize =
+	11
+
+GlobalSearch.Font =
+	Enum.Font.GothamBold
+
+GlobalSearch.ZIndex =
+	21
+
+GlobalSearch.Parent =
+	GlobalFrame
+
+Instance.new(
+	"UICorner",
+	GlobalSearch
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local GlobalList =
+	Instance.new("ScrollingFrame")
+
+GlobalList.Size =
+	UDim2.new(
+		1,
+		-20,
+		1,
+		-82
+	)
+
+GlobalList.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		78
+	)
+
+GlobalList.BackgroundColor3 =
+	Color3.fromRGB(
+		12,
+		12,
+		12
+	)
+
+GlobalList.BorderSizePixel =
+	0
+
+GlobalList.ScrollBarThickness =
+	4
+
+GlobalList.ZIndex =
+	21
+
+GlobalList.Parent =
+	GlobalFrame
+
+Instance.new(
+	"UICorner",
+	GlobalList
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local GlobalLayout =
+	Instance.new("UIListLayout")
+
+GlobalLayout.Padding =
+	UDim.new(
+		0,
+		5
+	)
+
+GlobalLayout.Parent =
+	GlobalList
 
 --==================================================
 -- RECIPE WINDOW
 --==================================================
 
-local RecipeFrame = Instance.new("Frame")
-RecipeFrame.Size = UDim2.new(0, 300, 0, 390)
-RecipeFrame.Position = UDim2.new(0.5, -150, 0.5, -195)
-RecipeFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-RecipeFrame.BorderSizePixel = 0
-RecipeFrame.Visible = false
-RecipeFrame.ZIndex = 30
-RecipeFrame.Parent = ScreenGui
+local RecipeFrame =
+	Instance.new("Frame")
 
-Instance.new("UICorner", RecipeFrame).CornerRadius =
-	UDim.new(0, 10)
+RecipeFrame.Size =
+	UDim2.new(
+		0,
+		300,
+		0,
+		390
+	)
 
-local RecipeTitle = Instance.new("TextLabel")
-RecipeTitle.Size = UDim2.new(1, -45, 0, 35)
-RecipeTitle.Position = UDim2.new(0, 10, 0, 0)
-RecipeTitle.BackgroundTransparency = 1
-RecipeTitle.Text = "📖 Recipes"
-RecipeTitle.TextColor3 = Color3.new(1, 1, 1)
-RecipeTitle.TextSize = 15
-RecipeTitle.Font = Enum.Font.GothamBold
-RecipeTitle.TextXAlignment = Enum.TextXAlignment.Left
-RecipeTitle.ZIndex = 31
-RecipeTitle.Parent = RecipeFrame
+RecipeFrame.Position =
+	UDim2.new(
+		0.5,
+		-150,
+		0.5,
+		-195
+	)
 
-local RecipeClose = Instance.new("TextButton")
-RecipeClose.Size = UDim2.new(0, 28, 0, 28)
-RecipeClose.Position = UDim2.new(1, -35, 0, 4)
-RecipeClose.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-RecipeClose.Text = "X"
-RecipeClose.TextColor3 = Color3.new(1, 1, 1)
-RecipeClose.TextSize = 12
-RecipeClose.Font = Enum.Font.GothamBold
-RecipeClose.ZIndex = 31
-RecipeClose.Parent = RecipeFrame
+RecipeFrame.BackgroundColor3 =
+	Color3.fromRGB(
+		18,
+		18,
+		18
+	)
 
-Instance.new("UICorner", RecipeClose).CornerRadius =
-	UDim.new(0, 7)
+RecipeFrame.BorderSizePixel =
+	0
 
-local RecipeSearch = Instance.new("TextBox")
-RecipeSearch.Size = UDim2.new(1, -20, 0, 30)
-RecipeSearch.Position = UDim2.new(0, 10, 0, 42)
-RecipeSearch.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-RecipeSearch.PlaceholderText = "Search recipes..."
-RecipeSearch.Text = ""
-RecipeSearch.TextColor3 = Color3.new(1, 1, 1)
+RecipeFrame.Visible =
+	false
+
+RecipeFrame.ZIndex =
+	30
+
+RecipeFrame.Parent =
+	ScreenGui
+
+Instance.new(
+	"UICorner",
+	RecipeFrame
+).CornerRadius =
+	UDim.new(
+		0,
+		10
+	)
+
+local RecipeTitle =
+	Instance.new("TextLabel")
+
+RecipeTitle.Size =
+	UDim2.new(
+		1,
+		-45,
+		0,
+		35
+	)
+
+RecipeTitle.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		0
+	)
+
+RecipeTitle.BackgroundTransparency =
+	1
+
+RecipeTitle.Text =
+	"📖 Recipes"
+
+RecipeTitle.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+RecipeTitle.TextSize =
+	15
+
+RecipeTitle.Font =
+	Enum.Font.GothamBold
+
+RecipeTitle.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+RecipeTitle.ZIndex =
+	31
+
+RecipeTitle.Parent =
+	RecipeFrame
+
+local RecipeClose =
+	Instance.new("TextButton")
+
+RecipeClose.Size =
+	UDim2.new(
+		0,
+		28,
+		0,
+		28
+	)
+
+RecipeClose.Position =
+	UDim2.new(
+		1,
+		-35,
+		0,
+		4
+	)
+
+RecipeClose.BackgroundColor3 =
+	Color3.fromRGB(
+		40,
+		40,
+		40
+	)
+
+RecipeClose.Text =
+	"X"
+
+RecipeClose.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
+RecipeClose.TextSize =
+	12
+
+RecipeClose.Font =
+	Enum.Font.GothamBold
+
+RecipeClose.ZIndex =
+	31
+
+RecipeClose.Parent =
+	RecipeFrame
+
+Instance.new(
+	"UICorner",
+	RecipeClose
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local RecipeSearch =
+	Instance.new("TextBox")
+
+RecipeSearch.Size =
+	UDim2.new(
+		1,
+		-20,
+		0,
+		30
+	)
+
+RecipeSearch.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		42
+	)
+
+RecipeSearch.BackgroundColor3 =
+	Color3.fromRGB(
+		30,
+		30,
+		30
+	)
+
+RecipeSearch.PlaceholderText =
+	"Search recipes..."
+
+RecipeSearch.Text =
+	""
+
+RecipeSearch.TextColor3 =
+	Color3.new(
+		1,
+		1,
+		1
+	)
+
 RecipeSearch.PlaceholderColor3 =
-	Color3.fromRGB(150, 150, 150)
-RecipeSearch.TextSize = 12
-RecipeSearch.Font = Enum.Font.Gotham
-RecipeSearch.ClearTextOnFocus = false
-RecipeSearch.ZIndex = 31
-RecipeSearch.Parent = RecipeFrame
+	Color3.fromRGB(
+		150,
+		150,
+		150
+	)
 
-Instance.new("UICorner", RecipeSearch).CornerRadius =
-	UDim.new(0, 7)
+RecipeSearch.TextSize =
+	12
 
-local RecipeList = Instance.new("ScrollingFrame")
-RecipeList.Size = UDim2.new(1, -20, 1, -82)
-RecipeList.Position = UDim2.new(0, 10, 0, 78)
-RecipeList.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
-RecipeList.BorderSizePixel = 0
-RecipeList.ScrollBarThickness = 4
-RecipeList.ZIndex = 31
-RecipeList.Parent = RecipeFrame
+RecipeSearch.Font =
+	Enum.Font.Gotham
 
-Instance.new("UICorner", RecipeList).CornerRadius =
-	UDim.new(0, 7)
+RecipeSearch.ClearTextOnFocus =
+	false
 
-local RecipeLayout = Instance.new("UIListLayout")
-RecipeLayout.Padding = UDim.new(0, 5)
-RecipeLayout.Parent = RecipeList
+RecipeSearch.ZIndex =
+	31
+
+RecipeSearch.Parent =
+	RecipeFrame
+
+Instance.new(
+	"UICorner",
+	RecipeSearch
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local RecipeList =
+	Instance.new("ScrollingFrame")
+
+RecipeList.Size =
+	UDim2.new(
+		1,
+		-20,
+		1,
+		-82
+	)
+
+RecipeList.Position =
+	UDim2.new(
+		0,
+		10,
+		0,
+		78
+	)
+
+RecipeList.BackgroundColor3 =
+	Color3.fromRGB(
+		12,
+		12,
+		12
+	)
+
+RecipeList.BorderSizePixel =
+	0
+
+RecipeList.ScrollBarThickness =
+	4
+
+RecipeList.ZIndex =
+	31
+
+RecipeList.Parent =
+	RecipeFrame
+
+Instance.new(
+	"UICorner",
+	RecipeList
+).CornerRadius =
+	UDim.new(
+		0,
+		7
+	)
+
+local RecipeLayout =
+	Instance.new("UIListLayout")
+
+RecipeLayout.Padding =
+	UDim.new(
+		0,
+		5
+	)
+
+RecipeLayout.Parent =
+	RecipeList
 
 --==================================================
--- CLEAR HELPERS
+-- CLEAR BUTTONS
 --==================================================
 
 local function clearButtons(frame)
 
-	for _, child in ipairs(frame:GetChildren()) do
+	for _, child in ipairs(
+		frame:GetChildren()
+	) do
 
 		if child:IsA("TextButton") then
+
 			child:Destroy()
+
 		end
 
 	end
@@ -850,71 +2511,109 @@ local function clearButtons(frame)
 end
 
 --==================================================
--- MAIN LIST
+-- MAIN BUTTON
 --==================================================
 
-local function addMainButton(obj)
+local function addMainButton(
+	obj
+)
 
-	local Button = Instance.new("TextButton")
+	local Button =
+		Instance.new("TextButton")
 
-	Button.Size = UDim2.new(1, -8, 0, 38)
-	Button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	Button.Text = obj.Name
-	Button.TextColor3 = Color3.new(1, 1, 1)
-	Button.TextSize = 12
-	Button.Font = Enum.Font.Gotham
-	Button.TextXAlignment = Enum.TextXAlignment.Left
-	Button.Parent = List
+	Button.Size =
+		UDim2.new(
+			1,
+			-8,
+			0,
+			38
+		)
 
-	Instance.new("UICorner", Button).CornerRadius =
-		UDim.new(0, 6)
+	Button.BackgroundColor3 =
+		Color3.fromRGB(
+			30,
+			30,
+			30
+		)
 
-	Button.MouseButton1Click:Connect(function()
+	Button.Text =
+		obj.Name
 
-		if obj and obj.Parent then
+	Button.TextColor3 =
+		Color3.new(
+			1,
+			1,
+			1
+		)
 
-			Event:FireServer(
-				"Mix",
-				obj,
-				2
-			)
+	Button.TextSize =
+		12
+
+	Button.Font =
+		Enum.Font.Gotham
+
+	Button.TextXAlignment =
+		Enum.TextXAlignment.Left
+
+	Button.Parent =
+		List
+
+	Instance.new(
+		"UICorner",
+		Button
+	).CornerRadius =
+		UDim.new(
+			0,
+			6
+		)
+
+	Button.MouseButton1Click:Connect(
+		function()
+
+			if not obj
+				or not obj.Parent then
+
+				return
+
+			end
+
+			waitForShakerIfActive()
+
+			if obj
+				and obj.Parent then
+
+				Event:FireServer(
+					"Mix",
+					obj,
+					2
+				)
+
+			end
 
 		end
-
-	end)
+	)
 
 end
+
+--==================================================
+-- REFRESH MAIN
+--==================================================
 
 local function refreshMain()
 
-	clearButtons(List)
+	clearButtons(
+		List
+	)
 
-	local search = SearchBox.Text:lower()
-	local added = {}
+	local search =
+		SearchBox.Text:lower()
 
-	for _, obj in ipairs(Bottles:GetChildren()) do
+	local added =
+		{}
 
-		if obj
-			and obj.Parent
-			and not added[obj.Name] then
-
-			if search == ""
-				or obj.Name:lower():find(
-					search,
-					1,
-					true
-				) then
-
-				added[obj.Name] = true
-				addMainButton(obj)
-
-			end
-
-		end
-
-	end
-
-	for _, obj in pairs(selectedInstances) do
+	for _, obj in ipairs(
+		Bottles:GetChildren()
+	) do
 
 		if obj
 			and obj.Parent
@@ -927,8 +2626,12 @@ local function refreshMain()
 					true
 				) then
 
-				added[obj.Name] = true
-				addMainButton(obj)
+				added[obj.Name] =
+					true
+
+				addMainButton(
+					obj
+				)
 
 			end
 
@@ -936,16 +2639,48 @@ local function refreshMain()
 
 	end
 
-	task.defer(function()
+	for _, obj in pairs(
+		selectedInstances
+	) do
 
-		List.CanvasSize = UDim2.new(
-			0,
-			0,
-			0,
-			ListLayout.AbsoluteContentSize.Y + 10
-		)
+		if obj
+			and obj.Parent
+			and not added[obj.Name] then
 
-	end)
+			if search == ""
+				or obj.Name:lower():find(
+					search,
+					1,
+					true
+				) then
+
+				added[obj.Name] =
+					true
+
+				addMainButton(
+					obj
+				)
+
+			end
+
+		end
+
+	end
+
+	task.defer(
+		function()
+
+			List.CanvasSize =
+				UDim2.new(
+					0,
+					0,
+					0,
+					ListLayout.AbsoluteContentSize.Y
+						+ 10
+				)
+
+		end
+	)
 
 end
 
@@ -955,14 +2690,22 @@ end
 
 local function globalSearchRefresh()
 
-	clearButtons(GlobalList)
+	clearButtons(
+		GlobalList
+	)
 
-	local search = GlobalBox.Text:lower()
+	local search =
+		GlobalBox.Text:lower()
 
-	local count = 0
-	local MAX_RESULTS = 100
+	local count =
+		0
 
-	for _, obj in ipairs(BottleCache) do
+	local MAX_RESULTS =
+		100
+
+	for _, obj in ipairs(
+		BottleCache
+	) do
 
 		if count >= MAX_RESULTS then
 			break
@@ -975,54 +2718,93 @@ local function globalSearchRefresh()
 				obj.Name:lower()
 
 			if search == ""
-				or name:find(search, 1, true) then
+				or name:find(
+					search,
+					1,
+					true
+				) then
 
-				count += 1
+				count +=
+					1
 
 				local Button =
-					Instance.new("TextButton")
+					Instance.new(
+						"TextButton"
+					)
 
 				Button.Size =
-					UDim2.new(1, -8, 0, 48)
+					UDim2.new(
+						1,
+						-8,
+						0,
+						48
+					)
 
 				Button.BackgroundColor3 =
-					Color3.fromRGB(30, 30, 30)
+					Color3.fromRGB(
+						30,
+						30,
+						30
+					)
 
 				Button.Text =
-					obj.Name ..
-					"\n" ..
-					obj:GetFullName()
+					obj.Name
+					.. "\n"
+					.. obj:GetFullName()
 
 				Button.TextColor3 =
-					Color3.new(1, 1, 1)
+					Color3.new(
+						1,
+						1,
+						1
+					)
 
-				Button.TextSize = 10
-				Button.Font = Enum.Font.Gotham
+				Button.TextSize =
+					10
+
+				Button.Font =
+					Enum.Font.Gotham
+
 				Button.TextXAlignment =
 					Enum.TextXAlignment.Left
 
-				Button.TextWrapped = true
-				Button.ZIndex = 22
-				Button.Parent = GlobalList
+				Button.TextWrapped =
+					true
 
-				Instance.new("UICorner", Button).CornerRadius =
-					UDim.new(0, 6)
+				Button.ZIndex =
+					22
 
-				Button.MouseButton1Click:Connect(function()
+				Button.Parent =
+					GlobalList
 
-					if obj and obj.Parent then
+				Instance.new(
+					"UICorner",
+					Button
+				).CornerRadius =
+					UDim.new(
+						0,
+						6
+					)
 
-						selectedInstances[
-							obj:GetFullName()
-						] = obj
+				Button.MouseButton1Click:Connect(
+					function()
 
-						GlobalFrame.Visible = false
+						if obj
+							and obj.Parent then
 
-						refreshMain()
+							selectedInstances[
+								obj:GetFullName()
+							] = obj
+
+							GlobalFrame.Visible =
+								false
+
+							refreshMain()
+
+						end
 
 					end
-
-				end)
+				)
 
 			end
 
@@ -1030,16 +2812,139 @@ local function globalSearchRefresh()
 
 	end
 
-	task.defer(function()
+	task.defer(
+		function()
 
-		GlobalList.CanvasSize = UDim2.new(
-			0,
-			0,
-			0,
-			GlobalLayout.AbsoluteContentSize.Y + 10
-		)
+			GlobalList.CanvasSize =
+				UDim2.new(
+					0,
+					0,
+					0,
+					GlobalLayout.AbsoluteContentSize.Y
+						+ 10
+				)
 
-	end)
+		end
+	)
+
+end
+
+--==================================================
+-- RECIPE MIX
+--==================================================
+
+local function startRecipeMix(
+	recipeData,
+	Button
+)
+
+	if Button:GetAttribute(
+		"Mixing"
+	) then
+
+		return
+
+	end
+
+	Button:SetAttribute(
+		"Mixing",
+		true
+	)
+
+	local recipeName =
+		recipeData.Name
+
+	local ingredients =
+		recipeData.Ingredients
+
+	local glassName =
+		recipeData.Glass
+
+	Button.Text =
+		recipeName
+		.. " ["
+		.. tostring(glassName)
+		.. "] • Mixing..."
+
+	task.spawn(
+		function()
+
+			local failed =
+				false
+
+			--==================================================
+			-- EACH INGREDIENT IN RECIPE ORDER
+			--==================================================
+
+			for index, ingredientName in ipairs(
+				ingredients
+			) do
+
+				print(
+					"[Poke Haven Mix Hub] Recipe:",
+					recipeName,
+					"Step:",
+					index,
+					"/",
+					#ingredients,
+					ingredientName
+				)
+
+				local success =
+					mixIngredient(
+						ingredientName
+					)
+
+				if not success then
+
+					failed =
+						true
+
+					break
+
+				end
+
+			end
+
+			--==================================================
+			-- FINISHED
+			--==================================================
+
+			Button:SetAttribute(
+				"Mixing",
+				false
+			)
+
+			if Button.Parent then
+
+				if failed then
+
+					Button.Text =
+						recipeName
+						.. " ["
+						.. tostring(glassName)
+						.. "] • Failed"
+
+					task.wait(
+						1
+					)
+
+				end
+
+				if Button.Parent then
+
+					Button.Text =
+						recipeName
+						.. " ["
+						.. tostring(glassName)
+						.. "]"
+
+				end
+
+			end
+
+		end
+	)
 
 end
 
@@ -1049,15 +2954,22 @@ end
 
 local function refreshRecipes()
 
-	clearButtons(RecipeList)
+	clearButtons(
+		RecipeList
+	)
 
 	local search =
 		RecipeSearch.Text:lower()
 
-	for recipeName, recipeData in pairs(Recipes) do
+	for _, recipeData in ipairs(
+		Recipes
+	) do
 
-		local ingredients = recipeData.Ingredients
-		local glassName = recipeData.Glass
+		local recipeName =
+			recipeData.Name
+
+		local glassName =
+			recipeData.Glass
 
 		if search == ""
 			or recipeName:lower():find(
@@ -1067,135 +2979,139 @@ local function refreshRecipes()
 			) then
 
 			local Button =
-				Instance.new("TextButton")
+				Instance.new(
+					"TextButton"
+				)
 
 			Button.Size =
-				UDim2.new(1, -8, 0, 42)
+				UDim2.new(
+					1,
+					-8,
+					0,
+					42
+				)
 
 			Button.BackgroundColor3 =
-				Color3.fromRGB(30, 30, 30)
+				Color3.fromRGB(
+					30,
+					30,
+					30
+				)
 
-			-- RECIPE NAME + GLASS
 			Button.Text =
-				recipeName ..
-				" [" ..
-				tostring(glassName) ..
-				"]"
+				recipeName
+				.. " ["
+				.. tostring(glassName)
+				.. "]"
 
 			Button.TextColor3 =
-				Color3.new(1, 1, 1)
+				Color3.new(
+					1,
+					1,
+					1
+				)
 
-			Button.TextSize = 12
-			Button.Font = Enum.Font.GothamBold
+			Button.TextSize =
+				12
+
+			Button.Font =
+				Enum.Font.GothamBold
+
 			Button.TextXAlignment =
 				Enum.TextXAlignment.Left
 
-			Button.ZIndex = 32
-			Button.Parent = RecipeList
+			Button.ZIndex =
+				32
 
-			Instance.new("UICorner", Button).CornerRadius =
-				UDim.new(0, 6)
+			Button.Parent =
+				RecipeList
 
-			Button.MouseButton1Click:Connect(function()
-
-				if Button:GetAttribute("Mixing") then
-					return
-				end
-
-				Button:SetAttribute(
-					"Mixing",
-					true
+			Instance.new(
+				"UICorner",
+				Button
+			).CornerRadius =
+				UDim.new(
+					0,
+					6
 				)
 
-				Button.Text =
-					recipeName ..
-					" [" ..
-					tostring(glassName) ..
-					"] • Mixing..."
+			Button.MouseButton1Click:Connect(
+				function()
 
-				task.spawn(function()
-
-					for index, ingredientName
-						in ipairs(ingredients) do
-
-						local ingredient =
-							findIngredient(
-								ingredientName
-							)
-
-						if ingredient
-							and ingredient.Parent then
-
-							print(
-								"[Poke Haven Mix Hub] Mixing:",
-								ingredientName,
-								"->",
-								ingredient.Name
-							)
-
-							Event:FireServer(
-								"Mix",
-								ingredient,
-								2
-							)
-
-						else
-
-							warn(
-								"[Poke Haven Mix Hub] Could not find:",
-								ingredientName,
-								"for",
-								recipeName
-							)
-
-						end
-
-						--==================================================
-						-- 3 SECOND DELAY
-						--==================================================
-
-						if index < #ingredients then
-							task.wait(MIX_DELAY)
-						end
-
-					end
-
-					Button:SetAttribute(
-						"Mixing",
-						false
+					startRecipeMix(
+						recipeData,
+						Button
 					)
 
-					if Button.Parent then
-
-						Button.Text =
-							recipeName ..
-							" [" ..
-							tostring(glassName) ..
-							"]"
-
-					end
-
-				end)
-
-			end)
+				end
+			)
 
 		end
 
 	end
 
-	task.defer(function()
+	task.defer(
+		function()
 
-		RecipeList.CanvasSize =
-			UDim2.new(
-				0,
-				0,
-				0,
-				RecipeLayout.AbsoluteContentSize.Y + 10
-			)
+			RecipeList.CanvasSize =
+				UDim2.new(
+					0,
+					0,
+					0,
+					RecipeLayout.AbsoluteContentSize.Y
+						+ 10
+				)
 
-	end)
+		end
+	)
 
 end
+
+--==================================================
+-- CANDY / CUP COSMETICS
+--==================================================
+-- Fires every child exactly like:
+--
+-- Event:FireServer(
+--     "AddCosmetic",
+--     CupCosmetics:GetChildren()[24]
+-- )
+
+Candy.MouseButton1Click:Connect(
+	function()
+
+		local cosmetics =
+			CupCosmetics:GetChildren()
+
+		print(
+			"[Poke Haven Mix Hub] Cup cosmetics:",
+			#cosmetics
+		)
+
+		for index, cosmetic in ipairs(
+			cosmetics
+		) do
+
+			if cosmetic
+				and cosmetic.Parent then
+
+				print(
+					"[Poke Haven Mix Hub] AddCosmetic:",
+					index,
+					cosmetic.Name
+				)
+
+				Event:FireServer(
+					"AddCosmetic",
+					cosmetic
+				)
+
+			end
+
+		end
+
+	end
+)
 
 --==================================================
 -- BUTTON EVENTS
@@ -1209,47 +3125,59 @@ SearchBox.FocusLost:Connect(
 	refreshMain
 )
 
-Gear.MouseButton1Click:Connect(function()
+Gear.MouseButton1Click:Connect(
+	function()
 
-	GlobalFrame.Visible =
-		not GlobalFrame.Visible
+		GlobalFrame.Visible =
+			not GlobalFrame.Visible
 
-	if GlobalFrame.Visible then
+		if GlobalFrame.Visible then
 
-		RecipeFrame.Visible = false
+			RecipeFrame.Visible =
+				false
 
-		globalSearchRefresh()
+			globalSearchRefresh()
 
-	end
-
-end)
-
-Book.MouseButton1Click:Connect(function()
-
-	RecipeFrame.Visible =
-		not RecipeFrame.Visible
-
-	if RecipeFrame.Visible then
-
-		GlobalFrame.Visible = false
-
-		refreshRecipes()
+		end
 
 	end
+)
 
-end)
+Book.MouseButton1Click:Connect(
+	function()
 
-GlobalClose.MouseButton1Click:Connect(function()
+		RecipeFrame.Visible =
+			not RecipeFrame.Visible
 
-	GlobalFrame.Visible = false
+		if RecipeFrame.Visible then
 
-end)
+			GlobalFrame.Visible =
+				false
 
-RecipeClose.MouseButton1Click:Connect(function()
+			refreshRecipes()
 
-	RecipeFrame.Visible = false
+		end
 
-end)
+	end
+)
+
+GlobalClose.MouseButton1Click:Connect(
+	function()
+
+		GlobalFrame.Visible =
+			false
+
+	end
+)
+
+RecipeClose.MouseButton1Click:Connect(
+	function()
+
+		RecipeFrame.Visible =
+			false
+
+	end
+)
 
 GlobalSearch.MouseButton1Click:Connect(
 	globalSearchRefresh
@@ -1267,56 +3195,82 @@ RecipeSearch.FocusLost:Connect(
 -- MINIMIZE
 --==================================================
 
-local minimized = false
+local minimized =
+	false
 
-Minimize.MouseButton1Click:Connect(function()
+Minimize.MouseButton1Click:Connect(
+	function()
 
-	minimized = not minimized
+		minimized =
+			not minimized
 
-	SearchBox.Visible =
-		not minimized
+		SearchBox.Visible =
+			not minimized
 
-	SearchButton.Visible =
-		not minimized
+		SearchButton.Visible =
+			not minimized
 
-	List.Visible =
-		not minimized
+		List.Visible =
+			not minimized
 
-	if minimized then
+		if minimized then
 
-		Main.Size =
-			UDim2.new(0, 240, 0, 40)
+			Main.Size =
+				UDim2.new(
+					0,
+					240,
+					0,
+					40
+				)
 
-	else
+		else
 
-		Main.Size =
-			UDim2.new(0, 240, 0, 300)
+			Main.Size =
+				UDim2.new(
+					0,
+					240,
+					0,
+					300
+				)
+
+		end
 
 	end
-
-end)
+)
 
 --==================================================
 -- BOTTLE UPDATES
 --==================================================
 
-Bottles.ChildAdded:Connect(function()
+Bottles.ChildAdded:Connect(
+	function()
 
-	task.defer(function()
-		rebuildBottleCache()
-		refreshMain()
-	end)
+		task.defer(
+			function()
 
-end)
+				rebuildBottleCache()
+				refreshMain()
 
-Bottles.ChildRemoved:Connect(function()
+			end
+		)
 
-	task.defer(function()
-		rebuildBottleCache()
-		refreshMain()
-	end)
+	end
+)
 
-end)
+Bottles.ChildRemoved:Connect(
+	function()
+
+		task.defer(
+			function()
+
+				rebuildBottleCache()
+				refreshMain()
+
+			end
+		)
+
+	end
+)
 
 --==================================================
 -- INITIALIZE
@@ -1330,16 +3284,37 @@ print(
 )
 
 print(
-	"[Poke Haven Mix Hub] Using actual DrinkClass.RecipeLib recipes."
+	"[Poke Haven Mix Hub] Actual DrinkClass.RecipeLib recipes."
 )
 
 print(
-	"[Poke Haven Mix Hub] Bottles:",
-	Bottles:GetFullName()
+	"[Poke Haven Mix Hub] Walk toggle:",
+	walkToIngredients
 )
 
 print(
-	"[Poke Haven Mix Hub] Recipe delay:",
-	MIX_DELAY,
-	"seconds."
+	"[Poke Haven Mix Hub] Stop distance:",
+	STOP_DISTANCE,
+	"studs"
+)
+
+print(
+	"[Poke Haven Mix Hub] Ingredient delay:",
+	BETWEEN_INGREDIENT_DELAY,
+	"seconds"
+)
+
+print(
+	"[Poke Haven Mix Hub] Shaker:",
+	MIX_ANIMATION_ID
+)
+
+print(
+	"[Poke Haven Mix Hub] Late shaker starts cause ingredient retry."
+)
+
+print(
+	"[Poke Haven Mix Hub] Ingredient scan radius:",
+	INGREDIENT_SCAN_RADIUS,
+	"studs"
 )
